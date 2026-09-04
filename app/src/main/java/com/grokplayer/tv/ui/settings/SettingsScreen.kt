@@ -31,9 +31,10 @@ import androidx.compose.material.icons.outlined.SettingsInputHdmi
 import androidx.compose.material.icons.outlined.Tv
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.foundation.focusable
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -57,7 +58,6 @@ import com.grokplayer.tv.ui.theme.GrokSurface
 import com.grokplayer.tv.ui.theme.GrokType
 import com.grokplayer.tv.ui.theme.GrokWhite
 import com.grokplayer.tv.ui.theme.GrokYellow
-import kotlinx.coroutines.delay
 
 private enum class SettingsCategory(val labelRes: Int, val icon: ImageVector) {
     Playback(R.string.cat_playback, Icons.Outlined.PlayCircle),
@@ -93,13 +93,6 @@ fun SettingsScreen(
     var hideControls by remember { mutableStateOf("2 saniye") }
     var startScreen by remember { mutableStateOf("Ana sayfa") }
 
-    LaunchedEffect(category, zone) {
-        if (zone == SettingsZone.Details) {
-            delay(16)
-            runCatching { firstDetailFocus.requestFocus() }
-        }
-    }
-
     BackHandler(enabled = zone == SettingsZone.Details) {
         zone = SettingsZone.Categories
         runCatching { categoryRequester(category).requestFocus() }
@@ -134,12 +127,11 @@ fun SettingsScreen(
                                 right = firstDetailFocus
                             }
                             .onFocusChanged { state ->
-                                if (state.isFocused) zone = SettingsZone.Categories
+                                if (state.isFocused) {
+                                    category = item
+                                    zone = SettingsZone.Categories
+                                }
                             },
-                        onClick = {
-                            category = item
-                            zone = SettingsZone.Details
-                        },
                     )
                 }
             }
@@ -157,6 +149,7 @@ fun SettingsScreen(
                     color = GrokWhite,
                     modifier = Modifier.padding(bottom = 10.dp),
                 )
+                key(category) {
                 if (category == SettingsCategory.Playback) {
                     ToggleRow(
                         title = "Kaldığın yerden devam et",
@@ -229,14 +222,22 @@ fun SettingsScreen(
                         )
                     }
                 }
+                }
             }
         }
 
         HintBar(
-            parts = listOf(
-                stringResource(R.string.hint_change),
-                stringResource(R.string.hint_back_categories),
-            ),
+            parts = if (zone == SettingsZone.Details) {
+                listOf(
+                    stringResource(R.string.hint_change),
+                    stringResource(R.string.hint_back_categories),
+                )
+            } else {
+                listOf(
+                    stringResource(R.string.hint_open_details),
+                    stringResource(R.string.hint_back_menu),
+                )
+            },
             modifier = Modifier.padding(top = 10.dp),
         )
     }
@@ -246,7 +247,6 @@ fun SettingsScreen(
 private fun CategoryRow(
     item: SettingsCategory,
     selected: Boolean,
-    onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -258,7 +258,7 @@ private fun CategoryRow(
             .clip(shape)
             .background(if (selected) GrokSurface else Color.Transparent)
             .then(if (focused) Modifier.border(1.5.dp, GrokYellow, shape) else Modifier)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .focusable(interactionSource = interaction)
             .padding(horizontal = 10.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

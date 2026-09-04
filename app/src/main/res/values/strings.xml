@@ -32,6 +32,7 @@
     <string name="hint_choose">← →: İşlem seç</string>
     <string name="hint_back_menu">Geri: Menü</string>
     <string name="hint_change">OK: Değiştir</string>
+    <string name="hint_open_details">→: Ayarlar</string>
     <string name="hint_back_categories">Geri: Kategoriler</string>
     <string name="settings_subtitle">GrokPlayer’ı kendine göre ayarla</string>
     <string name="streams_subtitle">Kayıtlı yayınlar ve videolar</string>
