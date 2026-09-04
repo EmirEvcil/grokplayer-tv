@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">GrokPlayer</string>
+    <string name="nav_home">Ana sayfa</string>
+    <string name="nav_videos">Videolar</string>
+    <string name="nav_streams">Akışlar</string>
+    <string name="nav_downloads">İndirilenler</string>
+    <string name="nav_settings">Ayarlar</string>
+    <string name="continue_watching">İzlemeye devam et</string>
+    <string name="resume">Devam et</string>
+    <string name="play_from_start">Baştan oynat</string>
+    <string name="recently_opened">Son açılanlar</string>
+    <string name="source_local">Yerel</string>
+    <string name="source_stream">Akış</string>
+    <string name="coming_soon">Yakında</string>
+    <string name="coming_soon_body">Bu sayfa yakında eklenecek.</string>
+    <string name="search">Ara</string>
+    <string name="playback_placeholder">Oynatma henüz bağlanmadı.</string>
+</resources>

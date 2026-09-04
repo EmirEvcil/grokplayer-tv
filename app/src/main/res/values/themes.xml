@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.GrokPlayerTV" parent="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+        <item name="android:windowBackground">#111214</item>
+        <item name="android:colorBackground">#111214</item>
+        <item name="android:windowFullscreen">true</item>
+    </style>
+</resources>
