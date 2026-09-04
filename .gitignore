@@ -16,3 +16,4 @@ app/build/
 *.log
 .kotlin/
 screenshot-*.png
+shot-*.png

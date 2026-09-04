@@ -4,7 +4,7 @@ import androidx.annotation.StringRes
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Podcasts
+import androidx.compose.material.icons.outlined.CellTower
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -16,7 +16,7 @@ enum class Destination(
 ) {
     Home(R.string.nav_home, Icons.Outlined.Home),
     Videos(R.string.nav_videos, Icons.Outlined.VideoLibrary),
-    Streams(R.string.nav_streams, Icons.Outlined.Podcasts),
+    Streams(R.string.nav_streams, Icons.Outlined.CellTower),
     Downloads(R.string.nav_downloads, Icons.Outlined.Download),
     Settings(R.string.nav_settings, Icons.Outlined.Settings),
 }

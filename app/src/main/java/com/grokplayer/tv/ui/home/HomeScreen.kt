@@ -52,6 +52,7 @@ import com.grokplayer.tv.ui.theme.LocalPlaceholderAction
 @Composable
 fun HomeScreen(
     resumeFocus: FocusRequester,
+    railFocus: FocusRequester,
     modifier: Modifier = Modifier,
 ) {
     val hero = HomeCatalog.hero
@@ -69,12 +70,13 @@ fun HomeScreen(
         Box(
             Modifier
                 .fillMaxHeight()
-                .fillMaxWidth(0.62f)
+                .fillMaxWidth(0.74f)
                 .background(
                     Brush.horizontalGradient(
-                        0f to GrokInk.copy(alpha = 0.88f),
-                        0.55f to GrokInk.copy(alpha = 0.55f),
-                        1f to Color.Transparent,
+                        0.00f to GrokInk.copy(alpha = 0.96f),
+                        0.28f to GrokInk.copy(alpha = 0.88f),
+                        0.58f to GrokInk.copy(alpha = 0.48f),
+                        1.00f to Color.Transparent,
                     ),
                 ),
         )
@@ -95,7 +97,7 @@ fun HomeScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(start = 28.dp, end = 28.dp, top = 58.dp, bottom = 18.dp),
+                .padding(start = 28.dp, end = 28.dp, top = 70.dp, bottom = 18.dp),
         ) {
             Text(
                 text = stringResource(R.string.continue_watching).uppercase(),
@@ -106,7 +108,7 @@ fun HomeScreen(
                 text = hero.title,
                 style = GrokType.heroTitle,
                 color = GrokWhite,
-                modifier = Modifier.padding(top = 6.dp),
+                modifier = Modifier.padding(top = 22.dp),
             )
             Text(
                 text = "${hero.genre}  ·  ${hero.position} / ${hero.duration}",
@@ -123,20 +125,20 @@ fun HomeScreen(
                 HeroButton(
                     label = stringResource(R.string.resume),
                     icon = Icons.Filled.PlayArrow,
-                    filled = true,
                     modifier = Modifier
                         .focusRequester(resumeFocus)
                         .focusProperties {
                             down = cardRequesters.first()
+                            left = railFocus
                         },
                     onClick = { onPlaceholder(hero.title) },
                 )
                 HeroButton(
                     label = stringResource(R.string.play_from_start),
                     icon = Icons.Outlined.Replay,
-                    filled = false,
                     modifier = Modifier.focusProperties {
                         down = cardRequesters.first()
+                        left = railFocus
                     },
                     onClick = { onPlaceholder(hero.title) },
                 )
@@ -162,7 +164,7 @@ fun HomeScreen(
                             .focusRequester(cardRequesters[index])
                             .focusProperties {
                                 up = resumeFocus
-                                left = if (index == 0) FocusRequester.Default else cardRequesters[index - 1]
+                                left = if (index == 0) railFocus else cardRequesters[index - 1]
                                 right = if (index == cardRequesters.lastIndex) {
                                     FocusRequester.Default
                                 } else {
@@ -181,13 +183,12 @@ fun HomeScreen(
 private fun HeroButton(
     label: String,
     icon: ImageVector,
-    filled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused = interaction.collectIsFocusedAsState().value
-    val active = filled || focused
+    val active = focused
     val shape = RoundedCornerShape(8.dp)
     val fill = when {
         active -> GrokYellow

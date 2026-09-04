@@ -2,7 +2,7 @@ package com.grokplayer.tv.ui.shell
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -39,13 +39,16 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.grokplayer.tv.R
 import com.grokplayer.tv.ui.Destination
-import com.grokplayer.tv.ui.comingsoon.ComingSoonScreen
+import com.grokplayer.tv.ui.downloads.DownloadsScreen
 import com.grokplayer.tv.ui.home.HomeScreen
+import com.grokplayer.tv.ui.settings.SettingsScreen
+import com.grokplayer.tv.ui.streams.StreamsScreen
 import com.grokplayer.tv.ui.theme.GrokInk
 import com.grokplayer.tv.ui.theme.GrokMuted
 import com.grokplayer.tv.ui.theme.GrokSidebar
@@ -54,6 +57,7 @@ import com.grokplayer.tv.ui.theme.GrokType
 import com.grokplayer.tv.ui.theme.GrokWhite
 import com.grokplayer.tv.ui.theme.GrokYellow
 import com.grokplayer.tv.ui.theme.LocalPlaceholderAction
+import com.grokplayer.tv.ui.videos.VideosScreen
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -63,14 +67,12 @@ import kotlinx.coroutines.delay
 fun TvShell() {
     var destination by remember { mutableStateOf(Destination.Home) }
     var notice by remember { mutableStateOf<String?>(null) }
-    val resumeFocus = remember { FocusRequester() }
-    val homeNavFocus = remember { FocusRequester() }
+    val navFocus = remember { Destination.entries.associateWith { FocusRequester() } }
+    val pageFocus = remember { Destination.entries.associateWith { FocusRequester() } }
 
     LaunchedEffect(destination) {
-        if (destination == Destination.Home) {
-            delay(40)
-            runCatching { resumeFocus.requestFocus() }
-        }
+        delay(50)
+        runCatching { pageFocus.getValue(destination).requestFocus() }
     }
 
     LaunchedEffect(notice) {
@@ -97,19 +99,38 @@ fun TvShell() {
             Row(Modifier.fillMaxSize()) {
                 SideRail(
                     selected = destination,
+                    navFocus = navFocus,
+                    contentFocus = pageFocus.getValue(destination),
                     onSelect = { destination = it },
-                    homeFocus = homeNavFocus,
-                    contentFocus = resumeFocus,
                 )
                 Box(Modifier.weight(1f).fillMaxHeight()) {
+                    val rail = navFocus.getValue(destination)
                     AnimatedContent(targetState = destination, label = "page") { page ->
+                        val focus = pageFocus.getValue(page)
                         when (page) {
                             Destination.Home -> HomeScreen(
-                                resumeFocus = resumeFocus,
+                                resumeFocus = focus,
+                                railFocus = rail,
                                 modifier = Modifier.fillMaxSize(),
                             )
-                            else -> ComingSoonScreen(
-                                title = stringResource(page.labelRes),
+                            Destination.Videos -> VideosScreen(
+                                firstFocus = focus,
+                                railFocus = rail,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                            Destination.Streams -> StreamsScreen(
+                                firstFocus = focus,
+                                railFocus = rail,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                            Destination.Downloads -> DownloadsScreen(
+                                firstFocus = focus,
+                                railFocus = rail,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                            Destination.Settings -> SettingsScreen(
+                                firstFocus = focus,
+                                railFocus = rail,
                                 modifier = Modifier.fillMaxSize(),
                             )
                         }
@@ -142,32 +163,27 @@ fun TvShell() {
 @Composable
 private fun SideRail(
     selected: Destination,
-    onSelect: (Destination) -> Unit,
-    homeFocus: FocusRequester,
+    navFocus: Map<Destination, FocusRequester>,
     contentFocus: FocusRequester,
+    onSelect: (Destination) -> Unit,
 ) {
     Column(
         modifier = Modifier
-            .width(152.dp)
+            .width(156.dp)
             .fillMaxHeight()
             .background(GrokSidebar)
             .padding(top = 22.dp, bottom = 24.dp),
     ) {
-        BrandMark(Modifier.padding(start = 20.dp, end = 12.dp))
+        BrandMark(Modifier.padding(start = 18.dp, end = 12.dp))
         Spacer(Modifier.height(88.dp))
         Destination.entries.forEach { item ->
-            val modifier = if (item == Destination.Home) {
-                Modifier
-                    .focusRequester(homeFocus)
-                    .focusProperties { right = contentFocus }
-            } else {
-                Modifier.focusProperties { right = contentFocus }
-            }
             NavRow(
                 destination = item,
                 selected = item == selected,
                 onSelect = { onSelect(item) },
-                modifier = modifier,
+                modifier = Modifier
+                    .focusRequester(navFocus.getValue(item))
+                    .focusProperties { right = contentFocus },
             )
         }
     }
@@ -180,15 +196,12 @@ private fun BrandMark(modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Canvas(Modifier.size(18.dp, 16.dp)) {
-            val path = Path().apply {
-                moveTo(0f, 1.dp.toPx())
-                lineTo(size.width, size.height / 2f)
-                lineTo(0f, size.height - 1.dp.toPx())
-                close()
-            }
-            drawPath(path, GrokYellow)
-        }
+        Image(
+            painter = painterResource(R.drawable.logo_mark),
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(22.dp),
+        )
         Text(
             text = "GrokPlayer",
             style = GrokType.wordmark,
@@ -206,15 +219,12 @@ private fun NavRow(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused = interaction.collectIsFocusedAsState().value
-    val tint = when {
-        selected || focused -> GrokYellow
-        else -> GrokMuted
-    }
-    val labelColor = when {
-        selected -> GrokWhite
+    val iconTint = when {
+        selected -> GrokYellow
         focused -> GrokSoft
         else -> GrokMuted
     }
+    val labelColor = if (focused) GrokWhite else GrokMuted
 
     Row(
         modifier = modifier
@@ -238,7 +248,7 @@ private fun NavRow(
         Icon(
             imageVector = destination.icon,
             contentDescription = null,
-            tint = tint,
+            tint = iconTint,
             modifier = Modifier
                 .padding(start = 16.dp)
                 .size(20.dp),

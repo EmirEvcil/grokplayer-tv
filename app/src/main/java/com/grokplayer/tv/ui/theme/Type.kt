@@ -61,6 +61,11 @@ object GrokType {
         fontSize = 14.sp,
         letterSpacing = 0.3.sp,
     )
+    val pageTitle = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Bold,
+        fontSize = 28.sp,
+    )
     val comingTitle = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Bold,
