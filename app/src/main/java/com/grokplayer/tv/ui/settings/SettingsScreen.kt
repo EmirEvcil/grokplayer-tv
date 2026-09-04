@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,16 +22,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.VolumeUp
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.ClosedCaption
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.SettingsInputHdmi
 import androidx.compose.material.icons.outlined.Tv
-import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
@@ -54,6 +57,7 @@ import com.grokplayer.tv.ui.theme.GrokSurface
 import com.grokplayer.tv.ui.theme.GrokType
 import com.grokplayer.tv.ui.theme.GrokWhite
 import com.grokplayer.tv.ui.theme.GrokYellow
+import kotlinx.coroutines.delay
 
 private enum class SettingsCategory(val labelRes: Int, val icon: ImageVector) {
     Playback(R.string.cat_playback, Icons.Outlined.PlayCircle),
@@ -65,6 +69,8 @@ private enum class SettingsCategory(val labelRes: Int, val icon: ImageVector) {
     About(R.string.cat_about, Icons.Outlined.Info),
 }
 
+private enum class SettingsZone { Categories, Details }
+
 @Composable
 fun SettingsScreen(
     firstFocus: FocusRequester,
@@ -72,9 +78,13 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
 ) {
     var category by remember { mutableStateOf(SettingsCategory.Playback) }
-    var inDetails by remember { mutableStateOf(true) }
-    val categoryFocus = remember { FocusRequester() }
-    val detailFocus = firstFocus
+    var zone by remember { mutableStateOf(SettingsZone.Categories) }
+    val otherCategoryFocus = remember {
+        SettingsCategory.entries.drop(1).associateWith { FocusRequester() }
+    }
+    val firstDetailFocus = remember { FocusRequester() }
+    fun categoryRequester(item: SettingsCategory): FocusRequester =
+        if (item == SettingsCategory.Playback) firstFocus else otherCategoryFocus.getValue(item)
 
     var resumeFrom by remember { mutableStateOf(true) }
     var autoNext by remember { mutableStateOf(true) }
@@ -83,9 +93,16 @@ fun SettingsScreen(
     var hideControls by remember { mutableStateOf("2 saniye") }
     var startScreen by remember { mutableStateOf("Ana sayfa") }
 
-    BackHandler(enabled = inDetails) {
-        inDetails = false
-        categoryFocus.requestFocus()
+    LaunchedEffect(category, zone) {
+        if (zone == SettingsZone.Details) {
+            delay(16)
+            runCatching { firstDetailFocus.requestFocus() }
+        }
+    }
+
+    BackHandler(enabled = zone == SettingsZone.Details) {
+        zone = SettingsZone.Categories
+        runCatching { categoryRequester(category).requestFocus() }
     }
 
     Column(
@@ -106,20 +123,22 @@ fun SettingsScreen(
                 modifier = Modifier.width(168.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                SettingsCategory.entries.forEachIndexed { index, item ->
+                SettingsCategory.entries.forEach { item ->
                     CategoryRow(
                         item = item,
                         selected = item == category,
                         modifier = Modifier
-                            .then(if (index == 0) Modifier.focusRequester(categoryFocus) else Modifier)
+                            .focusRequester(categoryRequester(item))
                             .focusProperties {
                                 left = railFocus
-                                right = detailFocus
+                                right = firstDetailFocus
+                            }
+                            .onFocusChanged { state ->
+                                if (state.isFocused) zone = SettingsZone.Categories
                             },
                         onClick = {
                             category = item
-                            inDetails = true
-                            detailFocus.requestFocus()
+                            zone = SettingsZone.Details
                         },
                     )
                 }
@@ -144,14 +163,19 @@ fun SettingsScreen(
                         subtitle = "Videoları bıraktığın noktadan aç.",
                         checked = resumeFrom,
                         onClick = { resumeFrom = !resumeFrom },
-                        modifier = Modifier.focusProperties { left = categoryFocus },
+                        modifier = Modifier
+                            .focusRequester(firstDetailFocus)
+                            .focusProperties { left = categoryRequester(category) }
+                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
                     )
                     ToggleRow(
                         title = "Sonraki videoyu otomatik oynat",
                         subtitle = null,
                         checked = autoNext,
                         onClick = { autoNext = !autoNext },
-                        modifier = Modifier.focusProperties { left = categoryFocus },
+                        modifier = Modifier
+                            .focusProperties { left = categoryRequester(category) }
+                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
                     )
                     ValueRow(
                         title = "İleri / geri sarma adımı",
@@ -160,20 +184,24 @@ fun SettingsScreen(
                             seekStep = if (seekStep == "10 saniye") "5 saniye" else "10 saniye"
                         },
                         modifier = Modifier
-                            .focusRequester(detailFocus)
-                            .focusProperties { left = categoryFocus },
+                            .focusProperties { left = categoryRequester(category) }
+                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
                     )
                     ValueRow(
                         title = "Varsayılan oynatma hızı",
                         value = speed,
                         onClick = { speed = if (speed == "1×") "1,25×" else "1×" },
-                        modifier = Modifier.focusProperties { left = categoryFocus },
+                        modifier = Modifier
+                            .focusProperties { left = categoryRequester(category) }
+                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
                     )
                     ValueRow(
                         title = "Kontrolleri gizleme süresi",
                         value = hideControls,
                         onClick = { hideControls = if (hideControls == "2 saniye") "5 saniye" else "2 saniye" },
-                        modifier = Modifier.focusProperties { left = categoryFocus },
+                        modifier = Modifier
+                            .focusProperties { left = categoryRequester(category) }
+                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
                     )
                     ValueRow(
                         title = "Açılış ekranı",
@@ -181,18 +209,25 @@ fun SettingsScreen(
                         onClick = {
                             startScreen = if (startScreen == "Ana sayfa") "Videolar" else "Ana sayfa"
                         },
-                        modifier = Modifier.focusProperties { left = categoryFocus },
+                        modifier = Modifier
+                            .focusProperties { left = categoryRequester(category) }
+                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
                     )
                 } else {
-                    Text(
-                        text = stringResource(R.string.coming_soon_body),
-                        style = GrokType.comingBody,
-                        color = GrokMuted,
+                    SettingCard(
+                        onClick = { },
                         modifier = Modifier
-                            .padding(top = 8.dp)
-                            .focusRequester(detailFocus)
-                            .clickable { },
-                    )
+                            .focusRequester(firstDetailFocus)
+                            .focusProperties { left = categoryRequester(category) }
+                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
+                    ) {
+                        Text(
+                            text = stringResource(R.string.coming_soon_body),
+                            style = GrokType.comingBody,
+                            color = GrokMuted,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
             }
         }
@@ -307,7 +342,7 @@ private fun ValueRow(
 private fun SettingCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    content: @Composable androidx.compose.foundation.layout.RowScope.(Boolean) -> Unit,
+    content: @Composable RowScope.(Boolean) -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused = interaction.collectIsFocusedAsState().value

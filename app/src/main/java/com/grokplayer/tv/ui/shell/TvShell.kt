@@ -139,6 +139,7 @@ fun TvShell() {
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(top = 18.dp, end = 28.dp),
+                        downFocus = pageFocus.getValue(destination),
                         onSearch = { notice = "Arama yakında" },
                     )
                 }
@@ -265,6 +266,7 @@ private fun NavRow(
 @Composable
 private fun TopChrome(
     onSearch: () -> Unit,
+    downFocus: FocusRequester,
     modifier: Modifier = Modifier,
 ) {
     var clock by remember { mutableStateOf(currentClock()) }
@@ -289,6 +291,7 @@ private fun TopChrome(
             modifier = Modifier
                 .size(22.dp)
                 .clip(CircleShape)
+                .focusProperties { down = downFocus }
                 .clickable(
                     interactionSource = interaction,
                     indication = null,

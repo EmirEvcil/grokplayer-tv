@@ -57,6 +57,7 @@ fun HomeScreen(
 ) {
     val hero = HomeCatalog.hero
     val onPlaceholder = LocalPlaceholderAction.current
+    val replayFocus = remember { FocusRequester() }
     val cardRequesters = remember { HomeCatalog.recent.map { FocusRequester() } }
 
     Box(modifier.fillMaxSize()) {
@@ -130,16 +131,19 @@ fun HomeScreen(
                         .focusProperties {
                             down = cardRequesters.first()
                             left = railFocus
+                            right = replayFocus
                         },
                     onClick = { onPlaceholder(hero.title) },
                 )
                 HeroButton(
                     label = stringResource(R.string.play_from_start),
                     icon = Icons.Outlined.Replay,
-                    modifier = Modifier.focusProperties {
-                        down = cardRequesters.first()
-                        left = railFocus
-                    },
+                    modifier = Modifier
+                        .focusRequester(replayFocus)
+                        .focusProperties {
+                            down = cardRequesters.first()
+                            left = resumeFocus
+                        },
                     onClick = { onPlaceholder(hero.title) },
                 )
             }
