@@ -17,3 +17,4 @@ app/build/
 .kotlin/
 screenshot-*.png
 shot-*.png
+focus-tests/
