@@ -31,6 +31,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +48,7 @@ import com.grokplayer.tv.R
 import com.grokplayer.tv.ui.Destination
 import com.grokplayer.tv.ui.downloads.DownloadsScreen
 import com.grokplayer.tv.ui.home.HomeScreen
+import com.grokplayer.tv.ui.settings.SettingsCategory
 import com.grokplayer.tv.ui.settings.SettingsScreen
 import com.grokplayer.tv.ui.streams.StreamsScreen
 import com.grokplayer.tv.ui.theme.GrokInk
@@ -67,6 +69,7 @@ import kotlinx.coroutines.delay
 fun TvShell() {
     var destination by remember { mutableStateOf(Destination.Home) }
     var notice by remember { mutableStateOf<String?>(null) }
+    var lastSettingsCategory by rememberSaveable { mutableStateOf(SettingsCategory.Playback.name) }
     val navFocus = remember { Destination.entries.associateWith { FocusRequester() } }
     val pageFocus = remember { Destination.entries.associateWith { FocusRequester() } }
 
@@ -131,6 +134,10 @@ fun TvShell() {
                             Destination.Settings -> SettingsScreen(
                                 firstFocus = focus,
                                 railFocus = rail,
+                                initialCategory = runCatching {
+                                    SettingsCategory.valueOf(lastSettingsCategory)
+                                }.getOrDefault(SettingsCategory.Playback),
+                                onCategoryChanged = { lastSettingsCategory = it.name },
                                 modifier = Modifier.fillMaxSize(),
                             )
                         }

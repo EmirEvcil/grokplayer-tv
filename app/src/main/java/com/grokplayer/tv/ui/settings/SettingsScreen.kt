@@ -59,7 +59,7 @@ import com.grokplayer.tv.ui.theme.GrokType
 import com.grokplayer.tv.ui.theme.GrokWhite
 import com.grokplayer.tv.ui.theme.GrokYellow
 
-private enum class SettingsCategory(val labelRes: Int, val icon: ImageVector) {
+enum class SettingsCategory(val labelRes: Int, val icon: ImageVector) {
     Playback(R.string.cat_playback, Icons.Outlined.PlayCircle),
     Picture(R.string.cat_picture, Icons.Outlined.Tv),
     Audio(R.string.cat_audio, Icons.AutoMirrored.Outlined.VolumeUp),
@@ -76,15 +76,16 @@ fun SettingsScreen(
     firstFocus: FocusRequester,
     railFocus: FocusRequester,
     modifier: Modifier = Modifier,
+    initialCategory: SettingsCategory = SettingsCategory.Playback,
+    onCategoryChanged: (SettingsCategory) -> Unit = {},
 ) {
-    var category by remember { mutableStateOf(SettingsCategory.Playback) }
+    var category by remember { mutableStateOf(initialCategory) }
     var zone by remember { mutableStateOf(SettingsZone.Categories) }
-    val otherCategoryFocus = remember {
-        SettingsCategory.entries.drop(1).associateWith { FocusRequester() }
+    val categoryFocus = remember {
+        SettingsCategory.entries.associateWith { FocusRequester() }
     }
     val firstDetailFocus = remember { FocusRequester() }
-    fun categoryRequester(item: SettingsCategory): FocusRequester =
-        if (item == SettingsCategory.Playback) firstFocus else otherCategoryFocus.getValue(item)
+    fun categoryRequester(item: SettingsCategory): FocusRequester = categoryFocus.getValue(item)
 
     var resumeFrom by remember { mutableStateOf(true) }
     var autoNext by remember { mutableStateOf(true) }
@@ -122,6 +123,13 @@ fun SettingsScreen(
                         selected = item == category,
                         modifier = Modifier
                             .focusRequester(categoryRequester(item))
+                            .then(
+                                if (item == category) {
+                                    Modifier.focusRequester(firstFocus)
+                                } else {
+                                    Modifier
+                                },
+                            )
                             .focusProperties {
                                 left = railFocus
                                 right = firstDetailFocus
@@ -130,6 +138,7 @@ fun SettingsScreen(
                                 if (state.isFocused) {
                                     category = item
                                     zone = SettingsZone.Categories
+                                    onCategoryChanged(item)
                                 }
                             },
                     )
