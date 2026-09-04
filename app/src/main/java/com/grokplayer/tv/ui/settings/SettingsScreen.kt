@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.grokplayer.tv.R
+import com.grokplayer.tv.data.PlaybackSettings
 import com.grokplayer.tv.ui.components.HintBar
 import com.grokplayer.tv.ui.theme.GrokMuted
 import com.grokplayer.tv.ui.theme.GrokPink
@@ -78,6 +79,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     initialCategory: SettingsCategory = SettingsCategory.Playback,
     onCategoryChanged: (SettingsCategory) -> Unit = {},
+    settings: PlaybackSettings,
 ) {
     var category by remember { mutableStateOf(initialCategory) }
     var zone by remember { mutableStateOf(SettingsZone.Categories) }
@@ -86,13 +88,6 @@ fun SettingsScreen(
     }
     val firstDetailFocus = remember { FocusRequester() }
     fun categoryRequester(item: SettingsCategory): FocusRequester = categoryFocus.getValue(item)
-
-    var resumeFrom by remember { mutableStateOf(true) }
-    var autoNext by remember { mutableStateOf(true) }
-    var seekStep by remember { mutableStateOf("10 saniye") }
-    var speed by remember { mutableStateOf("1×") }
-    var hideControls by remember { mutableStateOf("2 saniye") }
-    var startScreen by remember { mutableStateOf("Ana sayfa") }
 
     BackHandler(enabled = zone == SettingsZone.Details) {
         zone = SettingsZone.Categories
@@ -163,8 +158,8 @@ fun SettingsScreen(
                     ToggleRow(
                         title = "Kaldığın yerden devam et",
                         subtitle = "Videoları bıraktığın noktadan aç.",
-                        checked = resumeFrom,
-                        onClick = { resumeFrom = !resumeFrom },
+                        checked = settings.resumeEnabled,
+                        onClick = { settings.toggleResume() },
                         modifier = Modifier
                             .focusRequester(firstDetailFocus)
                             .focusProperties { left = categoryRequester(category) }
@@ -173,44 +168,40 @@ fun SettingsScreen(
                     ToggleRow(
                         title = "Sonraki videoyu otomatik oynat",
                         subtitle = null,
-                        checked = autoNext,
-                        onClick = { autoNext = !autoNext },
+                        checked = settings.autoNext,
+                        onClick = { settings.toggleAutoNext() },
                         modifier = Modifier
                             .focusProperties { left = categoryRequester(category) }
                             .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
                     )
                     ValueRow(
                         title = "İleri / geri sarma adımı",
-                        value = seekStep,
-                        onClick = {
-                            seekStep = if (seekStep == "10 saniye") "5 saniye" else "10 saniye"
-                        },
+                        value = settings.seekStepLabel,
+                        onClick = { settings.cycleSeekStep() },
                         modifier = Modifier
                             .focusProperties { left = categoryRequester(category) }
                             .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
                     )
                     ValueRow(
                         title = "Varsayılan oynatma hızı",
-                        value = speed,
-                        onClick = { speed = if (speed == "1×") "1,25×" else "1×" },
+                        value = settings.speedLabel,
+                        onClick = { settings.cycleSpeed() },
                         modifier = Modifier
                             .focusProperties { left = categoryRequester(category) }
                             .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
                     )
                     ValueRow(
                         title = "Kontrolleri gizleme süresi",
-                        value = hideControls,
-                        onClick = { hideControls = if (hideControls == "2 saniye") "5 saniye" else "2 saniye" },
+                        value = settings.hideControlsLabel,
+                        onClick = { settings.cycleHideControls() },
                         modifier = Modifier
                             .focusProperties { left = categoryRequester(category) }
                             .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
                     )
                     ValueRow(
                         title = "Açılış ekranı",
-                        value = startScreen,
-                        onClick = {
-                            startScreen = if (startScreen == "Ana sayfa") "Videolar" else "Ana sayfa"
-                        },
+                        value = settings.startScreenLabel,
+                        onClick = { settings.cycleStartScreen() },
                         modifier = Modifier
                             .focusProperties { left = categoryRequester(category) }
                             .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },

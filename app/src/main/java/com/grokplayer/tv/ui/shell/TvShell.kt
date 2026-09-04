@@ -26,11 +26,16 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -41,11 +46,16 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.grokplayer.tv.R
+import com.grokplayer.tv.data.LibraryStore
+import com.grokplayer.tv.data.PlaySession
+import com.grokplayer.tv.data.PlaybackSettings
 import com.grokplayer.tv.ui.Destination
+import com.grokplayer.tv.ui.player.PlayerScreen
 import com.grokplayer.tv.ui.downloads.DownloadsScreen
 import com.grokplayer.tv.ui.home.HomeScreen
 import com.grokplayer.tv.ui.settings.SettingsCategory
@@ -64,14 +74,34 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun TvShell() {
-    var destination by remember { mutableStateOf(Destination.Home) }
+    val context = LocalContext.current
+    val library = remember { LibraryStore(context) }
+    val settings = remember { PlaybackSettings(context) }
+    val scope = rememberCoroutineScope()
+    var destination by remember { mutableStateOf(settings.startScreen) }
     var notice by remember { mutableStateOf<String?>(null) }
     var lastSettingsCategory by rememberSaveable { mutableStateOf(SettingsCategory.Playback.name) }
+    var session by remember { mutableStateOf<PlaySession?>(null) }
+    var resumePlayback by remember { mutableStateOf(true) }
     val navFocus = remember { Destination.entries.associateWith { FocusRequester() } }
     val pageFocus = remember { Destination.entries.associateWith { FocusRequester() } }
+    val permission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { scope.launch { library.refresh() } }
+
+    LaunchedEffect(Unit) {
+        val needed = if (Build.VERSION.SDK_INT >= 33) {
+            arrayOf(Manifest.permission.READ_MEDIA_VIDEO)
+        } else {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        permission.launch(needed)
+        library.refresh()
+    }
 
     LaunchedEffect(destination) {
         delay(50)
@@ -85,7 +115,7 @@ fun TvShell() {
         }
     }
 
-    BackHandler(enabled = destination != Destination.Home) {
+    BackHandler(enabled = session == null && destination != Destination.Home) {
         destination = Destination.Home
     }
 
@@ -99,6 +129,16 @@ fun TvShell() {
                 .fillMaxSize()
                 .background(GrokInk),
         ) {
+            val playing = session
+            if (playing != null) {
+                PlayerScreen(
+                    session = playing,
+                    resume = resumePlayback,
+                    library = library,
+                    settings = settings,
+                    onClose = { session = null },
+                )
+            } else {
             Row(Modifier.fillMaxSize()) {
                 SideRail(
                     selected = destination,
@@ -114,11 +154,21 @@ fun TvShell() {
                             Destination.Home -> HomeScreen(
                                 resumeFocus = focus,
                                 railFocus = rail,
+                                library = library,
+                                onPlay = { queue, index, resume ->
+                                    resumePlayback = resume
+                                    session = PlaySession(queue, index)
+                                },
                                 modifier = Modifier.fillMaxSize(),
                             )
                             Destination.Videos -> VideosScreen(
                                 firstFocus = focus,
                                 railFocus = rail,
+                                library = library,
+                                onPlay = { queue, index ->
+                                    resumePlayback = true
+                                    session = PlaySession(queue, index)
+                                },
                                 modifier = Modifier.fillMaxSize(),
                             )
                             Destination.Streams -> StreamsScreen(
@@ -138,6 +188,7 @@ fun TvShell() {
                                     SettingsCategory.valueOf(lastSettingsCategory)
                                 }.getOrDefault(SettingsCategory.Playback),
                                 onCategoryChanged = { lastSettingsCategory = it.name },
+                                settings = settings,
                                 modifier = Modifier.fillMaxSize(),
                             )
                         }
@@ -150,6 +201,7 @@ fun TvShell() {
                         onSearch = { notice = "Arama yakında" },
                     )
                 }
+            }
             }
             notice?.let { message ->
                 Text(
