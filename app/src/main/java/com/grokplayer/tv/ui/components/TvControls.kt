@@ -25,12 +25,20 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -54,14 +62,56 @@ fun FocusableAction(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused = interaction.collectIsFocusedAsState().value
+    var longFired by remember { mutableStateOf(false) }
+    var suppressClick by remember { mutableStateOf(false) }
     Row(
         modifier = modifier
             .clip(shape)
+            .onPreviewKeyEvent { event ->
+                if (onLongClick == null) return@onPreviewKeyEvent false
+                val center = event.key == Key.DirectionCenter || event.key == Key.Enter
+                if (!center) return@onPreviewKeyEvent false
+                when (event.type) {
+                    KeyEventType.KeyDown -> {
+                        val repeat = event.nativeKeyEvent.repeatCount
+                        if (repeat == 0) {
+                            longFired = false
+                            false
+                        } else if (!longFired) {
+                            longFired = true
+                            suppressClick = true
+                            onLongClick()
+                            true
+                        } else {
+                            true
+                        }
+                    }
+                    KeyEventType.KeyUp -> {
+                        if (longFired || suppressClick) {
+                            longFired = false
+                            suppressClick = true
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    else -> false
+                }
+            }
             .combinedClickable(
                 interactionSource = interaction,
                 indication = null,
-                onClick = onClick,
-                onLongClick = onLongClick,
+                onClick = {
+                    if (suppressClick) {
+                        suppressClick = false
+                    } else {
+                        onClick()
+                    }
+                },
+                onLongClick = {
+                    suppressClick = true
+                    onLongClick?.invoke()
+                },
             ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -217,6 +267,23 @@ fun MediaPoster(
                     .background(GrokPink),
             )
         }
+    }
+}
+
+@Composable
+fun AbsorbOpeningOk(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    var armed by remember { mutableStateOf(true) }
+    Box(
+        modifier
+            .fillMaxSize()
+            .onPreviewKeyEvent { event ->
+            val ok = event.key == Key.DirectionCenter || event.key == Key.Enter
+            if (!armed || !ok) return@onPreviewKeyEvent false
+            if (event.type == KeyEventType.KeyUp) armed = false
+            true
+        },
+    ) {
+        content()
     }
 }
 

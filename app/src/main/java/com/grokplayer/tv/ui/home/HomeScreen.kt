@@ -7,6 +7,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,6 +17,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
@@ -23,7 +28,11 @@ import androidx.compose.material.icons.outlined.Replay
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,7 +47,7 @@ import androidx.compose.ui.unit.dp
 import com.grokplayer.tv.R
 import com.grokplayer.tv.data.LibraryStore
 import com.grokplayer.tv.data.LibraryVideo
-import com.grokplayer.tv.data.StorageSource
+import com.grokplayer.tv.data.ThumbnailCache
 import com.grokplayer.tv.data.formatClock
 import com.grokplayer.tv.ui.components.EmptyState
 import com.grokplayer.tv.ui.components.VideoPoster
@@ -49,6 +58,7 @@ import com.grokplayer.tv.ui.theme.GrokSoft
 import com.grokplayer.tv.ui.theme.GrokType
 import com.grokplayer.tv.ui.theme.GrokWhite
 import com.grokplayer.tv.ui.theme.GrokYellow
+import kotlinx.coroutines.delay
 
 @Composable
 fun HomeScreen(
@@ -56,12 +66,51 @@ fun HomeScreen(
     railFocus: FocusRequester,
     library: LibraryStore,
     onPlay: (List<LibraryVideo>, Int, Boolean) -> Unit,
+    focusItemId: String? = null,
+    onFocusConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val hero = library.continueWatching() ?: library.recentVideos().firstOrNull()
-    val recents = library.recentVideos().ifEmpty { library.videos.take(4) }
+    val recents = library.recentVideos().ifEmpty { library.videos.take(10) }
     val replayFocus = remember { FocusRequester() }
     val cardRequesters = remember(recents.size) { List(recents.size.coerceAtLeast(1)) { FocusRequester() } }
+    val recentState = rememberLazyListState()
+    var lastLaunch by remember { mutableStateOf(HomeLaunch.Resume) }
+    var lastCardId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(focusItemId) {
+        if (focusItemId == null) return@LaunchedEffect
+        when (lastLaunch) {
+            HomeLaunch.Resume -> {
+                delay(32)
+                repeat(3) {
+                    runCatching { resumeFocus.requestFocus() }
+                    delay(40)
+                }
+            }
+            HomeLaunch.Replay -> {
+                delay(32)
+                repeat(3) {
+                    runCatching { replayFocus.requestFocus() }
+                    delay(40)
+                }
+            }
+            HomeLaunch.Card -> {
+                val index = recents.indexOfFirst { it.id == (lastCardId ?: focusItemId) }
+                if (index >= 0) {
+                    recentState.scrollToItem(index)
+                    delay(32)
+                    repeat(3) {
+                        runCatching { cardRequesters.getOrNull(index)?.requestFocus() }
+                        delay(40)
+                    }
+                } else {
+                    runCatching { resumeFocus.requestFocus() }
+                }
+            }
+        }
+        onFocusConsumed()
+    }
 
     if (hero == null) {
         Column(
@@ -93,6 +142,10 @@ fun HomeScreen(
             uri = hero.uri,
             title = hero.title,
             focused = false,
+            path = hero.path,
+            format = hero.format,
+            timeMs = position.takeIf { it > 1_000L } ?: 1_000L,
+            maxWidth = ThumbnailCache.HERO_WIDTH,
             modifier = Modifier.fillMaxSize(),
         )
         Box(
@@ -134,7 +187,11 @@ fun HomeScreen(
             )
             Text(hero.title, style = GrokType.heroTitle, color = GrokWhite, modifier = Modifier.padding(top = 22.dp))
             Text(
-                text = "${if (hero.source == StorageSource.Usb) "USB" else "Yerel"}  ·  ${position.formatClock()} / ${hero.durationMs.formatClock()}",
+                text = when {
+                    hero.isLive -> "${hero.sourceLabel}  ·  CANLI"
+                    hero.durationMs <= 0L -> "${hero.sourceLabel}  ·  ${position.formatClock()}"
+                    else -> "${hero.sourceLabel}  ·  ${position.formatClock()} / ${hero.durationMs.formatClock()}"
+                },
                 style = GrokType.heroMeta,
                 color = GrokMuted,
                 modifier = Modifier.padding(top = 8.dp),
@@ -155,7 +212,10 @@ fun HomeScreen(
                             left = railFocus
                             right = replayFocus
                         },
-                    onClick = { onPlay(queue, heroIndex, true) },
+                    onClick = {
+                        lastLaunch = HomeLaunch.Resume
+                        onPlay(queue, heroIndex, true)
+                    },
                 )
                 HeroButton(
                     label = stringResource(R.string.play_from_start),
@@ -166,7 +226,10 @@ fun HomeScreen(
                             down = if (recents.isNotEmpty()) cardRequesters.first() else FocusRequester.Default
                             left = resumeFocus
                         },
-                    onClick = { onPlay(queue, heroIndex, false) },
+                    onClick = {
+                        lastLaunch = HomeLaunch.Replay
+                        onPlay(queue, heroIndex, false)
+                    },
                 )
             }
 
@@ -181,30 +244,37 @@ fun HomeScreen(
             if (recents.isEmpty()) {
                 Text(stringResource(R.string.empty_recents), style = GrokType.cardMeta, color = GrokMuted)
             } else {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    recents.take(4).forEachIndexed { index, item ->
-                        RecentCard(
-                            video = item,
-                            sourceLabel = if (item.source == StorageSource.Usb) {
-                                "USB"
-                            } else {
-                                stringResource(R.string.source_local)
-                            },
-                            progress = library.progressFraction(item),
-                            modifier = Modifier
-                                .weight(1f)
-                                .focusRequester(cardRequesters[index])
-                                .focusProperties {
-                                    up = resumeFocus
-                                    left = if (index == 0) railFocus else cardRequesters[index - 1]
-                                    right = if (index == recents.lastIndex.coerceAtMost(3)) {
-                                        FocusRequester.Default
-                                    } else {
-                                        cardRequesters[index + 1]
-                                    }
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val cardWidth = (maxWidth - 14.dp * 3) / 4
+                    LazyRow(
+                        state = recentState,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        itemsIndexed(recents, key = { _, item -> item.id }) { index, item ->
+                            RecentCard(
+                                video = item,
+                                sourceLabel = item.sourceLabel,
+                                progress = library.progressFraction(item),
+                                modifier = Modifier
+                                    .width(cardWidth)
+                                    .focusRequester(cardRequesters[index])
+                                    .focusProperties {
+                                        up = resumeFocus
+                                        left = if (index == 0) railFocus else cardRequesters[index - 1]
+                                        right = if (index == recents.lastIndex) {
+                                            FocusRequester.Default
+                                        } else {
+                                            cardRequesters[index + 1]
+                                        }
+                                    },
+                                onClick = {
+                                    lastLaunch = HomeLaunch.Card
+                                    lastCardId = item.id
+                                    onPlay(recents, index, true)
                                 },
-                            onClick = { onPlay(recents, index, true) },
-                        )
+                            )
+                        }
                     }
                 }
             }
@@ -254,6 +324,8 @@ private fun RecentCard(
             title = video.title,
             focused = focused,
             progress = progress,
+            path = video.path,
+            format = video.format,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
@@ -263,3 +335,5 @@ private fun RecentCard(
         Text(sourceLabel, style = GrokType.cardMeta, color = GrokMuted, modifier = Modifier.padding(top = 2.dp))
     }
 }
+
+private enum class HomeLaunch { Resume, Replay, Card }

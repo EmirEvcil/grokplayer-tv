@@ -20,8 +20,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -34,7 +32,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.grokplayer.tv.R
 import com.grokplayer.tv.data.LibraryVideo
-import com.grokplayer.tv.data.StorageSource
 import com.grokplayer.tv.data.formatClock
 import com.grokplayer.tv.ui.components.VideoPoster
 import com.grokplayer.tv.ui.theme.GrokInk
@@ -55,6 +52,7 @@ fun PlaylistPanel(
     modifier: Modifier = Modifier,
 ) {
     val first = remember { FocusRequester() }
+    com.grokplayer.tv.ui.theme.InterceptBack { onClose(); true }
     BackHandler(onBack = onClose)
     Column(
         modifier
@@ -68,21 +66,8 @@ fun PlaylistPanel(
             text = "${videos.size} video",
             style = GrokType.cardMeta,
             color = GrokMuted,
-            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+            modifier = Modifier.padding(top = 4.dp, bottom = 16.dp),
         )
-        Row(Modifier.padding(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-            Text(stringResource(R.string.source_local), style = GrokType.button, color = GrokWhite)
-            Column {
-                Text(stringResource(R.string.nav_streams), style = GrokType.button, color = GrokMuted)
-                Box(
-                    Modifier
-                        .padding(top = 4.dp)
-                        .width(28.dp)
-                        .height(2.dp)
-                        .background(GrokPink),
-                )
-            }
-        }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             itemsIndexed(videos, key = { _, item -> item.id }) { index, item ->
                 val interaction = remember { MutableInteractionSource() }
@@ -103,6 +88,8 @@ fun PlaylistPanel(
                         uri = item.uri,
                         title = item.title,
                         focused = false,
+                        path = item.path,
+                        format = item.format,
                         modifier = Modifier
                             .width(88.dp)
                             .height(50.dp),
@@ -113,8 +100,7 @@ fun PlaylistPanel(
                             text = if (current) {
                                 "${item.durationMs.formatClock()} · ${stringResource(R.string.now_playing)}"
                             } else {
-                                val src = if (item.source == StorageSource.Usb) "USB" else "Yerel"
-                                "${item.durationMs.formatClock()} · $src"
+                                "${item.durationMs.formatClock()} · ${item.sourceLabel}"
                             },
                             style = GrokType.cardMeta,
                             color = if (current) GrokPink else GrokMuted,

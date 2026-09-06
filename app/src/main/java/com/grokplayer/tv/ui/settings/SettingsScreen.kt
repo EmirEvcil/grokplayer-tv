@@ -46,12 +46,24 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import android.os.Build
+import android.text.format.Formatter
+import androidx.compose.ui.platform.LocalContext
 import com.grokplayer.tv.R
+import com.grokplayer.tv.data.DownloadPaths
 import com.grokplayer.tv.data.PlaybackSettings
+import com.grokplayer.tv.data.link.LinkController
+import com.grokplayer.tv.data.link.PairedPc
 import com.grokplayer.tv.ui.components.HintBar
+import com.grokplayer.tv.ui.devices.DevicesSection
 import com.grokplayer.tv.ui.theme.GrokMuted
 import com.grokplayer.tv.ui.theme.GrokPink
 import com.grokplayer.tv.ui.theme.GrokSoft
@@ -80,6 +92,11 @@ fun SettingsScreen(
     initialCategory: SettingsCategory = SettingsCategory.Playback,
     onCategoryChanged: (SettingsCategory) -> Unit = {},
     settings: PlaybackSettings,
+    link: LinkController,
+    onOpenDevice: (PairedPc) -> Unit = {},
+    onDeviceMenu: (PairedPc) -> Unit = {},
+    focusSettingKey: String? = null,
+    onFocusConsumed: () -> Unit = {},
 ) {
     var category by remember { mutableStateOf(initialCategory) }
     var zone by remember { mutableStateOf(SettingsZone.Categories) }
@@ -87,7 +104,39 @@ fun SettingsScreen(
         SettingsCategory.entries.associateWith { FocusRequester() }
     }
     val firstDetailFocus = remember { FocusRequester() }
+    val settingKeys = remember {
+        mapOf(
+            "resume" to FocusRequester(),
+            "autonext" to FocusRequester(),
+            "seek" to FocusRequester(),
+            "speed" to FocusRequester(),
+            "hide" to FocusRequester(),
+            "start" to FocusRequester(),
+            "fit" to FocusRequester(),
+            "maxh" to FocusRequester(),
+            "alang" to FocusRequester(),
+            "stereo" to FocusRequester(),
+            "capon" to FocusRequester(),
+            "caplang" to FocusRequester(),
+            "capsize" to FocusRequester(),
+            "dlq" to FocusRequester(),
+            "dlpath" to FocusRequester(),
+            "about" to FocusRequester(),
+        )
+    }
     fun categoryRequester(item: SettingsCategory): FocusRequester = categoryFocus.getValue(item)
+
+    androidx.compose.runtime.LaunchedEffect(focusSettingKey, initialCategory) {
+        category = initialCategory
+        val key = focusSettingKey ?: return@LaunchedEffect
+        kotlinx.coroutines.delay(50)
+        if (key == "category") {
+            runCatching { categoryRequester(category).requestFocus() }
+        } else {
+            settingKeys[key]?.let { runCatching { it.requestFocus() } }
+        }
+        onFocusConsumed()
+    }
 
     BackHandler(enabled = zone == SettingsZone.Details) {
         zone = SettingsZone.Categories
@@ -112,7 +161,9 @@ fun SettingsScreen(
                 modifier = Modifier.width(168.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                SettingsCategory.entries.forEach { item ->
+                SettingsCategory.entries.forEachIndexed { index, item ->
+                    val previous = SettingsCategory.entries.getOrNull(index - 1)
+                    val next = SettingsCategory.entries.getOrNull(index + 1)
                     CategoryRow(
                         item = item,
                         selected = item == category,
@@ -127,7 +178,20 @@ fun SettingsScreen(
                             )
                             .focusProperties {
                                 left = railFocus
-                                right = firstDetailFocus
+                                right = FocusRequester.Cancel
+                                up = previous?.let { categoryRequester(it) } ?: FocusRequester.Default
+                                down = next?.let { categoryRequester(it) } ?: FocusRequester.Default
+                            }
+                            .onPreviewKeyEvent { event ->
+                                val ok = event.key == Key.DirectionCenter || event.key == Key.Enter
+                                if (ok) return@onPreviewKeyEvent true
+                                if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight) {
+                                    zone = SettingsZone.Details
+                                    runCatching { firstDetailFocus.requestFocus() }
+                                    true
+                                } else {
+                                    false
+                                }
                             }
                             .onFocusChanged { state ->
                                 if (state.isFocused) {
@@ -154,74 +218,17 @@ fun SettingsScreen(
                     modifier = Modifier.padding(bottom = 10.dp),
                 )
                 key(category) {
-                if (category == SettingsCategory.Playback) {
-                    ToggleRow(
-                        title = "Kaldığın yerden devam et",
-                        subtitle = "Videoları bıraktığın noktadan aç.",
-                        checked = settings.resumeEnabled,
-                        onClick = { settings.toggleResume() },
-                        modifier = Modifier
-                            .focusRequester(firstDetailFocus)
-                            .focusProperties { left = categoryRequester(category) }
-                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
+                    CategoryDetails(
+                        category = category,
+                        settings = settings,
+                        link = link,
+                        onOpenDevice = onOpenDevice,
+                        onDeviceMenu = onDeviceMenu,
+                        firstDetailFocus = firstDetailFocus,
+                        settingKeys = settingKeys,
+                        categoryFocus = categoryRequester(category),
+                        onEnterDetails = { zone = SettingsZone.Details },
                     )
-                    ToggleRow(
-                        title = "Sonraki videoyu otomatik oynat",
-                        subtitle = null,
-                        checked = settings.autoNext,
-                        onClick = { settings.toggleAutoNext() },
-                        modifier = Modifier
-                            .focusProperties { left = categoryRequester(category) }
-                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
-                    )
-                    ValueRow(
-                        title = "İleri / geri sarma adımı",
-                        value = settings.seekStepLabel,
-                        onClick = { settings.cycleSeekStep() },
-                        modifier = Modifier
-                            .focusProperties { left = categoryRequester(category) }
-                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
-                    )
-                    ValueRow(
-                        title = "Varsayılan oynatma hızı",
-                        value = settings.speedLabel,
-                        onClick = { settings.cycleSpeed() },
-                        modifier = Modifier
-                            .focusProperties { left = categoryRequester(category) }
-                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
-                    )
-                    ValueRow(
-                        title = "Kontrolleri gizleme süresi",
-                        value = settings.hideControlsLabel,
-                        onClick = { settings.cycleHideControls() },
-                        modifier = Modifier
-                            .focusProperties { left = categoryRequester(category) }
-                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
-                    )
-                    ValueRow(
-                        title = "Açılış ekranı",
-                        value = settings.startScreenLabel,
-                        onClick = { settings.cycleStartScreen() },
-                        modifier = Modifier
-                            .focusProperties { left = categoryRequester(category) }
-                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
-                    )
-                } else {
-                    SettingCard(
-                        onClick = { },
-                        modifier = Modifier
-                            .focusRequester(firstDetailFocus)
-                            .focusProperties { left = categoryRequester(category) }
-                            .onFocusChanged { if (it.isFocused) zone = SettingsZone.Details },
-                    ) {
-                        Text(
-                            text = stringResource(R.string.coming_soon_body),
-                            style = GrokType.comingBody,
-                            color = GrokMuted,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
                 }
             }
         }
@@ -240,6 +247,95 @@ fun SettingsScreen(
             },
             modifier = Modifier.padding(top = 10.dp),
         )
+    }
+}
+
+@Composable
+private fun CategoryDetails(
+    category: SettingsCategory,
+    settings: PlaybackSettings,
+    link: LinkController,
+    onOpenDevice: (PairedPc) -> Unit,
+    onDeviceMenu: (PairedPc) -> Unit,
+    firstDetailFocus: FocusRequester,
+    settingKeys: Map<String, FocusRequester>,
+    categoryFocus: FocusRequester,
+    onEnterDetails: () -> Unit,
+) {
+    val context = LocalContext.current
+    fun row(key: String, first: Boolean = false): Modifier {
+        return Modifier
+            .then(if (first) Modifier.focusRequester(firstDetailFocus) else Modifier)
+            .focusRequester(settingKeys.getValue(key))
+            .focusProperties { left = categoryFocus }
+            .onFocusChanged { if (it.isFocused) onEnterDetails() }
+    }
+    when (category) {
+        SettingsCategory.Playback -> {
+            ToggleRow("Kaldığın yerden devam et", "Videoları bıraktığın noktadan aç.", settings.resumeEnabled, { settings.toggleResume() }, row("resume", true))
+            ToggleRow("Sonraki videoyu otomatik oynat", null, settings.autoNext, { settings.toggleAutoNext() }, row("autonext"))
+            ValueRow("İleri / geri sarma adımı", settings.seekStepLabel, { settings.cycleSeekStep() }, row("seek"))
+            ValueRow("Varsayılan oynatma hızı", settings.speedLabel, { settings.cycleSpeed() }, row("speed"))
+            ValueRow("Kontrolleri gizleme süresi", settings.hideControlsLabel, { settings.cycleHideControls() }, row("hide"))
+            ValueRow("Açılış ekranı", settings.startScreenLabel, { settings.cycleStartScreen() }, row("start"))
+        }
+        SettingsCategory.Picture -> {
+            ValueRow("Görüntü sığdırma", settings.fitModeLabel, { settings.cycleFitMode() }, row("fit", true))
+            ValueRow("Üst çözünürlük", settings.maxHeightLabel, { settings.cycleMaxHeight() }, row("maxh"))
+        }
+        SettingsCategory.Audio -> {
+            ValueRow("Tercih edilen ses dili", settings.audioLangLabel, { settings.cycleAudioLang() }, row("alang", true))
+            ToggleRow("Yalnızca stereo", "Çok kanallı izleri iki kanala düşür.", settings.stereoOnly, { settings.toggleStereoOnly() }, row("stereo"))
+        }
+        SettingsCategory.Captions -> {
+            ToggleRow("Altyazıyı varsayılan aç", "Uygun iz varsa oynatmada otomatik seç.", settings.captionsOn, { settings.toggleCaptionsOn() }, row("capon", true))
+            ValueRow("Tercih edilen altyazı dili", settings.captionLangLabel, { settings.cycleCaptionLang() }, row("caplang"))
+            ValueRow("Altyazı boyutu", settings.captionSizeLabel, { settings.cycleCaptionSize() }, row("capsize"))
+        }
+        SettingsCategory.Downloads -> {
+            ValueRow("İndirme kalitesi", settings.downloadHeightLabel, { settings.cycleDownloadHeight() }, row("dlq", true))
+            InfoRow(
+                title = "Kayıt klasörü",
+                value = DownloadPaths.dir(context).absolutePath.substringAfter("/files/"),
+                modifier = row("dlpath"),
+            )
+            InfoRow(
+                title = "Boş alan",
+                value = Formatter.formatFileSize(context, DownloadPaths.freeBytes(context)),
+                modifier = Modifier
+                    .focusProperties { left = categoryFocus }
+                    .onFocusChanged { if (it.isFocused) onEnterDetails() },
+            )
+        }
+        SettingsCategory.Devices -> {
+            DevicesSection(
+                link = link,
+                firstFocus = firstDetailFocus,
+                leftFocus = categoryFocus,
+                onOpen = onOpenDevice,
+                onDeviceMenu = onDeviceMenu,
+                onEnterDetails = onEnterDetails,
+            )
+        }
+        SettingsCategory.About -> {
+            val info = runCatching { context.packageManager.getPackageInfo(context.packageName, 0) }.getOrNull()
+            InfoRow("Sürüm", info?.versionName ?: "0.1.0", row("about", true))
+            InfoRow("Paket", context.packageName, Modifier.focusProperties { left = categoryFocus }.onFocusChanged { if (it.isFocused) onEnterDetails() })
+            InfoRow("Cihaz", Build.MODEL, Modifier.focusProperties { left = categoryFocus }.onFocusChanged { if (it.isFocused) onEnterDetails() })
+            InfoRow("Android", Build.VERSION.RELEASE, Modifier.focusProperties { left = categoryFocus }.onFocusChanged { if (it.isFocused) onEnterDetails() })
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(
+    title: String,
+    value: String,
+    modifier: Modifier = Modifier,
+) {
+    SettingCard(onClick = { }, modifier = modifier) {
+        Text(title, style = GrokType.cardTitle, color = GrokWhite, modifier = Modifier.weight(1f))
+        Text(value, style = GrokType.heroMeta, color = GrokSoft, maxLines = 2)
     }
 }
 

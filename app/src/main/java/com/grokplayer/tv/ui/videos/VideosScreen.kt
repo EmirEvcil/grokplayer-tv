@@ -1,11 +1,7 @@
 package com.grokplayer.tv.ui.videos
 
-import android.content.Intent
 import android.net.Uri
-import android.os.Build
-import android.os.storage.StorageManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,12 +20,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -55,12 +54,14 @@ import com.grokplayer.tv.ui.components.FocusableAction
 import com.grokplayer.tv.ui.components.HintBar
 import com.grokplayer.tv.ui.components.OutlineButton
 import com.grokplayer.tv.ui.components.VideoPoster
+import com.grokplayer.tv.ui.theme.InterceptBack
 import com.grokplayer.tv.ui.theme.GrokInk
 import com.grokplayer.tv.ui.theme.GrokMuted
 import com.grokplayer.tv.ui.theme.GrokSurface
 import com.grokplayer.tv.ui.theme.GrokType
 import com.grokplayer.tv.ui.theme.GrokWhite
 import com.grokplayer.tv.ui.theme.GrokYellow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private enum class VideoFilter { All, Internal, Usb }
@@ -70,7 +71,11 @@ fun VideosScreen(
     firstFocus: FocusRequester,
     railFocus: FocusRequester,
     library: LibraryStore,
-    onPlay: (List<LibraryVideo>, Int) -> Unit,
+    onPlay: (List<LibraryVideo>, Int, Boolean) -> Unit,
+    onSend: (LibraryVideo) -> Unit = {},
+    canSend: Boolean = false,
+    focusVideoId: String? = null,
+    onFocusConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -79,19 +84,16 @@ fun VideosScreen(
     var sort by remember { mutableStateOf(VideoSort.RecentlyAdded) }
     var sortOpen by remember { mutableStateOf(false) }
     var folderOpen by remember { mutableStateOf(false) }
-
-    val treePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree(),
-    ) { uri ->
-        if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION,
-            )
-            library.addFolder(uri)
-            scope.launch { library.refresh() }
-        }
-    }
+    var optionsFor by remember { mutableStateOf<LibraryVideo?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    var pendingGridFocus by remember { mutableStateOf(false) }
+    val addFolderFocus = remember { FocusRequester() }
+    val firstVideoFocus = remember { FocusRequester() }
+    val gridState = rememberLazyGridState()
+    var savedScrollIndex by remember { mutableStateOf(0) }
+    var savedScrollOffset by remember { mutableStateOf(0) }
+    var lastWasAddFolder by remember { mutableStateOf(false) }
+    var scanFinished by remember { mutableStateOf(library.videos.isNotEmpty()) }
 
     val videos = remember(library.videos, filter, sort) {
         library.videos
@@ -111,8 +113,76 @@ fun VideosScreen(
                 },
             )
     }
+    fun dismissOverlay(): Boolean {
+        return when {
+            optionsFor != null -> {
+                runCatching { firstVideoFocus.requestFocus() }
+                optionsFor = null
+                true
+            }
+            sortOpen -> {
+                runCatching { addFolderFocus.requestFocus() }
+                sortOpen = false
+                true
+            }
+            else -> false
+        }
+    }
+    InterceptBack(enabled = sortOpen || optionsFor != null) { dismissOverlay() }
+    BackHandler(enabled = sortOpen || optionsFor != null) { dismissOverlay() }
+
     val sources = library.videos.map { it.source }.toSet().size
     val tileFocus = remember(videos.size) { List(videos.size.coerceAtLeast(1)) { FocusRequester() } }
+
+    LaunchedEffect(pendingGridFocus, videos) {
+        if (pendingGridFocus && videos.isNotEmpty()) {
+            gridState.scrollToItem(0)
+            delay(16)
+            runCatching { firstVideoFocus.requestFocus() }
+            gridState.animateScrollToItem(0)
+            pendingGridFocus = false
+        } else if (pendingGridFocus) {
+            pendingGridFocus = false
+        }
+    }
+
+    LaunchedEffect(focusVideoId, videos) {
+        val id = focusVideoId ?: return@LaunchedEffect
+        val index = videos.indexOfFirst { it.id == id }
+        if (index < 0) return@LaunchedEffect
+        gridState.scrollToItem(savedScrollIndex, savedScrollOffset)
+        delay(32)
+        val requester = if (index == 0) firstVideoFocus else tileFocus.getOrNull(index)
+        repeat(3) {
+            runCatching { requester?.requestFocus() }
+            delay(40)
+        }
+        gridState.scrollToItem(savedScrollIndex, savedScrollOffset)
+        onFocusConsumed()
+    }
+
+    LaunchedEffect(Unit) {
+        val start = android.os.SystemClock.elapsedRealtime()
+        while (library.videos.isEmpty() && android.os.SystemClock.elapsedRealtime() - start < 2500) {
+            delay(50)
+        }
+        scanFinished = true
+    }
+
+    var filterReady by remember { mutableStateOf(false) }
+    LaunchedEffect(filter) {
+        if (filterReady && videos.isNotEmpty() && !pendingGridFocus) {
+            gridState.animateScrollToItem(0)
+        }
+        filterReady = true
+    }
+
+    LaunchedEffect(notice) {
+        if (notice != null) {
+            delay(2200)
+            notice = null
+        }
+    }
 
     Box(modifier.fillMaxSize()) {
         Column(
@@ -130,7 +200,7 @@ fun VideosScreen(
                 Column {
                     Text(stringResource(R.string.nav_videos), style = GrokType.pageTitle, color = GrokWhite)
                     Text(
-                        text = if (videos.isEmpty()) {
+                        text = if (library.videos.isEmpty()) {
                             stringResource(R.string.videos_empty_meta)
                         } else {
                             "${videos.size} video · $sources kaynak"
@@ -145,7 +215,17 @@ fun VideosScreen(
                         label = stringResource(R.string.add_folder),
                         icon = Icons.Outlined.CreateNewFolder,
                         onClick = { folderOpen = true },
-                        modifier = Modifier.focusProperties { left = railFocus },
+                        modifier = Modifier
+                            .then(
+                                if ((scanFinished && videos.isEmpty()) || lastWasAddFolder) {
+                                    Modifier.focusRequester(firstFocus)
+                                } else {
+                                    Modifier
+                                },
+                            )
+                            .focusRequester(addFolderFocus)
+                            .onFocusChanged { if (it.isFocused) lastWasAddFolder = true }
+                            .focusProperties { left = railFocus },
                     )
                     OutlineButton(
                         label = stringResource(sort.labelRes),
@@ -159,20 +239,47 @@ fun VideosScreen(
                 modifier = Modifier.padding(top = 16.dp, bottom = 14.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                FilterChip(stringResource(R.string.filter_all), filter == VideoFilter.All, { filter = VideoFilter.All }, Modifier.focusProperties { left = railFocus })
-                FilterChip(stringResource(R.string.filter_internal), filter == VideoFilter.Internal, { filter = VideoFilter.Internal })
-                FilterChip(stringResource(R.string.filter_usb), filter == VideoFilter.Usb, { filter = VideoFilter.Usb })
+                FilterChip(
+                    stringResource(R.string.filter_all),
+                    filter == VideoFilter.All,
+                    {
+                        filter = VideoFilter.All
+                        lastWasAddFolder = false
+                    },
+                    Modifier.focusProperties {
+                        left = railFocus
+                        canFocus = !pendingGridFocus
+                    },
+                )
+                FilterChip(
+                    stringResource(R.string.filter_internal),
+                    filter == VideoFilter.Internal,
+                    {
+                        filter = VideoFilter.Internal
+                        lastWasAddFolder = false
+                    },
+                    Modifier.focusProperties { canFocus = !pendingGridFocus },
+                )
+                FilterChip(
+                    stringResource(R.string.filter_usb),
+                    filter == VideoFilter.Usb,
+                    {
+                        filter = VideoFilter.Usb
+                        lastWasAddFolder = false
+                    },
+                    Modifier.focusProperties { canFocus = !pendingGridFocus },
+                )
             }
 
             if (videos.isEmpty()) {
                 EmptyState(
                     title = stringResource(R.string.empty_videos_title),
                     body = stringResource(R.string.empty_videos_body),
-                    modifier = Modifier.focusRequester(firstFocus),
                 )
             } else {
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(3),
+                    state = gridState,
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.weight(1f),
@@ -182,11 +289,31 @@ fun VideosScreen(
                             video = video,
                             progress = library.progressFraction(video),
                             modifier = Modifier
-                                .focusRequester(if (index == 0) firstFocus else tileFocus[index])
+                                .then(
+                                    if (index == 0 && !lastWasAddFolder) {
+                                        Modifier.focusRequester(firstFocus)
+                                    } else {
+                                        Modifier
+                                    },
+                                )
+                                .focusRequester(
+                                    when (index) {
+                                        0 -> firstVideoFocus
+                                        else -> tileFocus[index]
+                                    },
+                                )
+                                .onFocusChanged {
+                                    if (it.isFocused) lastWasAddFolder = false
+                                }
                                 .focusProperties {
                                     left = if (index % 3 == 0) railFocus else FocusRequester.Default
                                 },
-                            onClick = { onPlay(videos, index) },
+                            onClick = {
+                                savedScrollIndex = gridState.firstVisibleItemIndex
+                                savedScrollOffset = gridState.firstVisibleItemScrollOffset
+                                onPlay(videos, index, true)
+                            },
+                            onLongClick = { optionsFor = video },
                         )
                     }
                 }
@@ -204,22 +331,76 @@ fun VideosScreen(
                 onSelect = {
                     sort = it
                     sortOpen = false
+                    lastWasAddFolder = false
+                    pendingGridFocus = true
                 },
-                onDismiss = { sortOpen = false },
+                onDismiss = {
+                    runCatching { addFolderFocus.requestFocus() }
+                    sortOpen = false
+                },
             )
         }
         if (folderOpen) {
-            FolderPicker(
-                onPickTree = {
+            FolderBrowser(
+                restoreFocus = addFolderFocus,
+                onPick = { dir ->
+                    runCatching { addFolderFocus.requestFocus() }
                     folderOpen = false
-                    treePicker.launch(null)
+                    val before = library.videos.map { it.id }.toSet()
+                    library.addFolder(Uri.fromFile(dir))
+                    scope.launch {
+                        library.refresh()
+                        val added = library.videos.count { it.id !in before }
+                        notice = if (added > 0) {
+                            context.getString(R.string.folder_added_count, added)
+                        } else {
+                            context.getString(R.string.folder_added_none)
+                        }
+                    }
                 },
-                onPickVolume = { uri ->
+                onDismiss = {
+                    runCatching { addFolderFocus.requestFocus() }
                     folderOpen = false
-                    library.addFolder(uri)
-                    scope.launch { library.refresh() }
                 },
-                onDismiss = { folderOpen = false },
+            )
+        }
+        optionsFor?.let { video ->
+            val optionIndex = videos.indexOfFirst { it.id == video.id }.coerceAtLeast(0)
+            VideoOptions(
+                video = video,
+                onPlay = {
+                    optionsFor = null
+                    savedScrollIndex = gridState.firstVisibleItemIndex
+                    savedScrollOffset = gridState.firstVisibleItemScrollOffset
+                    onPlay(videos, optionIndex, true)
+                },
+                onPlayFromStart = {
+                    optionsFor = null
+                    savedScrollIndex = gridState.firstVisibleItemIndex
+                    savedScrollOffset = gridState.firstVisibleItemScrollOffset
+                    onPlay(videos, optionIndex, false)
+                },
+                canSend = canSend,
+                onSend = {
+                    optionsFor = null
+                    onSend(video)
+                },
+                onDismiss = {
+                    runCatching { firstVideoFocus.requestFocus() }
+                    optionsFor = null
+                },
+            )
+        }
+        notice?.let { message ->
+            Text(
+                text = message,
+                style = GrokType.cardTitle,
+                color = GrokInk,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 48.dp)
+                    .background(GrokYellow, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
             )
         }
     }
@@ -230,10 +411,12 @@ private fun VideoTile(
     video: LibraryVideo,
     progress: Float?,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     FocusableAction(
         onClick = onClick,
+        onLongClick = onLongClick,
         modifier = modifier,
         shape = RoundedCornerShape(8.dp),
     ) { focused ->
@@ -243,14 +426,15 @@ private fun VideoTile(
                 title = video.title,
                 focused = focused,
                 progress = progress,
+                path = video.path,
+                format = video.format,
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f),
             )
             Text(video.title, style = GrokType.cardTitle, color = GrokWhite, modifier = Modifier.padding(top = 8.dp))
-            val source = if (video.source == StorageSource.Usb) "USB" else "Dahili"
             Text(
-                text = "${video.durationMs.formatClock()} · ${video.format} · $source",
+                text = "${video.durationMs.formatClock()} · ${video.format} · ${video.sourceLabel}",
                 style = GrokType.cardMeta,
                 color = GrokMuted,
                 modifier = Modifier.padding(top = 2.dp),
@@ -260,13 +444,82 @@ private fun VideoTile(
 }
 
 @Composable
+private fun VideoOptions(
+    video: LibraryVideo,
+    onPlay: () -> Unit,
+    onPlayFromStart: () -> Unit,
+    onSend: () -> Unit,
+    canSend: Boolean,
+    onDismiss: () -> Unit,
+) {
+    com.grokplayer.tv.ui.theme.RememberFocusLock()
+    InterceptBack { onDismiss(); true }
+    val first = remember { FocusRequester() }
+    BackHandler(onBack = onDismiss)
+    com.grokplayer.tv.ui.components.AbsorbOpeningOk {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(GrokInk.copy(alpha = 0.55f))
+            .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) { onDismiss() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier
+                .width(360.dp)
+                .background(GrokSurface, RoundedCornerShape(12.dp))
+                .border(1.dp, GrokYellow.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+                .padding(16.dp)
+                .focusProperties {
+                    left = FocusRequester.Cancel
+                    right = FocusRequester.Cancel
+                },
+        ) {
+            Text(video.title, style = GrokType.section, color = GrokWhite)
+            Text(
+                text = "${video.durationMs.formatClock()} · ${video.format} · ${video.sourceLabel}",
+                style = GrokType.cardMeta,
+                color = GrokMuted,
+                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+            )
+            OptionRow(stringResource(R.string.resume), onPlay, Modifier.focusRequester(first))
+            OptionRow(stringResource(R.string.play_from_start), onPlayFromStart)
+            if (canSend) {
+                OptionRow("PC’ye gönder", onSend)
+            }
+            OptionRow(stringResource(R.string.close), onDismiss)
+        }
+    }
+    }
+    LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
+}
+
+@Composable
+private fun OptionRow(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused = interaction.collectIsFocusedAsState().value
+    Text(
+        text = label,
+        style = GrokType.button,
+        color = if (focused) GrokInk else GrokWhite,
+        modifier = modifier
+            .fillMaxWidth()
+            .background(if (focused) GrokYellow else androidx.compose.ui.graphics.Color.Transparent, RoundedCornerShape(6.dp))
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    )
+}
+
+@Composable
 private fun SortMenu(
     selected: VideoSort,
     onSelect: (VideoSort) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    com.grokplayer.tv.ui.theme.RememberFocusLock()
+    InterceptBack { onDismiss(); true }
     val first = remember { FocusRequester() }
-    androidx.activity.compose.BackHandler(onBack = onDismiss)
+    BackHandler(onBack = onDismiss)
     Box(
         Modifier
             .fillMaxSize()
@@ -280,7 +533,11 @@ private fun SortMenu(
                 .width(220.dp)
                 .background(GrokSurface, RoundedCornerShape(10.dp))
                 .border(1.dp, GrokYellow.copy(alpha = 0.25f), RoundedCornerShape(10.dp))
-                .padding(8.dp),
+                .padding(8.dp)
+                .focusProperties {
+                    left = FocusRequester.Cancel
+                    right = FocusRequester.Cancel
+                },
         ) {
             VideoSort.entries.forEachIndexed { index, option ->
                 val interaction = remember { MutableInteractionSource() }
@@ -306,74 +563,7 @@ private fun SortMenu(
             }
         }
     }
-    androidx.compose.runtime.LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
-}
-
-@Composable
-private fun FolderPicker(
-    onPickTree: () -> Unit,
-    onPickVolume: (Uri) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val context = LocalContext.current
-    val volumes = remember {
-        val manager = context.getSystemService(StorageManager::class.java)
-        manager?.storageVolumes.orEmpty().mapNotNull { volume ->
-            val dir = if (Build.VERSION.SDK_INT >= 30) volume.directory else null
-            if (dir != null && dir.exists()) {
-                val label = volume.getDescription(context)
-                Triple(label, volume.isRemovable, dir)
-            } else {
-                null
-            }
-        }
-    }
-    val first = remember { FocusRequester() }
-    androidx.activity.compose.BackHandler(onBack = onDismiss)
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(GrokInk.copy(alpha = 0.55f)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            Modifier
-                .width(360.dp)
-                .background(GrokSurface, RoundedCornerShape(12.dp))
-                .padding(18.dp),
-        ) {
-            Text(stringResource(R.string.add_folder), style = GrokType.section, color = GrokWhite)
-            Text(
-                text = stringResource(R.string.add_folder_body),
-                style = GrokType.cardMeta,
-                color = GrokMuted,
-                modifier = Modifier.padding(top = 6.dp, bottom = 12.dp),
-            )
-            volumes.forEachIndexed { index, (label, removable, dir) ->
-                val interaction = remember { MutableInteractionSource() }
-                val focused = interaction.collectIsFocusedAsState().value
-                Text(
-                    text = if (removable) "$label · USB" else label,
-                    style = GrokType.button,
-                    color = if (focused) GrokInk else GrokWhite,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .then(if (index == 0) Modifier.focusRequester(first) else Modifier)
-                        .background(if (focused) GrokYellow else androidx.compose.ui.graphics.Color.Transparent, RoundedCornerShape(6.dp))
-                        .clickable(interactionSource = interaction, indication = null) {
-                            onPickVolume(Uri.fromFile(dir))
-                        }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                )
-            }
-            OutlineButton(
-                label = stringResource(R.string.browse_storage),
-                onClick = onPickTree,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
-    }
-    androidx.compose.runtime.LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
+    LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
 }
 
 private val VideoSort.labelRes: Int
