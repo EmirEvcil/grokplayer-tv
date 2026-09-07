@@ -24,11 +24,12 @@ data class TransferJob(
     val status: String,
     val done: Long,
     val total: Long,
+    val sourceUrl: String? = null,
 )
 
 data class RemoteTrack(val index: Int, val label: String, val selected: Boolean)
 
-data class RemoteItem(val index: Int, val title: String, val current: Boolean)
+data class RemoteItem(val index: Int, val title: String, val current: Boolean, val key: String = "")
 
 data class RemoteState(
     val playing: Boolean = false,
@@ -45,7 +46,28 @@ data class RemoteState(
     val resolution: String? = null,
     val dubbing: String? = null,
     val jobs: List<TransferJob> = emptyList(),
-)
+    val have: List<RemoteHave> = emptyList(),
+    val resume: ResumeOffer? = null,
+) {
+    fun hasVideo(title: String, key: String? = null): Boolean {
+        val want = title.trim().lowercase()
+        if (want.isBlank()) return false
+        if (!key.isNullOrBlank() && have.any { it.key.equals(key, ignoreCase = true) }) return true
+        if (have.any { it.title.equals(title, ignoreCase = true) }) return true
+        return playlist.any { it.title.equals(title, ignoreCase = true) }
+    }
+
+    fun isCurrent(title: String): Boolean {
+        val want = title.trim().lowercase()
+        if (want.isBlank()) return false
+        if (this.title?.trim()?.equals(title.trim(), ignoreCase = true) == true) return true
+        return playlist.any { it.current && it.title.equals(title, ignoreCase = true) }
+    }
+}
+
+data class RemoteHave(val key: String, val title: String)
+
+data class ResumeOffer(val title: String, val seconds: Double, val duration: Double)
 
 data class LinkUi(
     val visible: Boolean = true,
@@ -55,9 +77,13 @@ data class LinkUi(
     val nearby: List<NearbyPc> = emptyList(),
     val paired: List<PairedPc> = emptyList(),
     val jobs: List<TransferJob> = emptyList(),
+    val connectedId: String? = null,
     val remote: RemoteState? = null,
     val notice: String? = null,
-)
+) {
+    fun isLive(id: String) = nearby.any { it.id == id }
+    fun isConnected(id: String) = connectedId == id
+}
 
 enum class SendMode { Copy, Stream }
 enum class SendWhen { PlayNow, Queue }

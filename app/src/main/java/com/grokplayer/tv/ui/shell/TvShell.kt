@@ -73,7 +73,9 @@ import com.grokplayer.tv.data.link.PairedPc
 import com.grokplayer.tv.ui.devices.DeviceHub
 import com.grokplayer.tv.ui.devices.DeviceOptions
 import com.grokplayer.tv.ui.devices.PairPinOverlay
+import com.grokplayer.tv.ui.devices.PcResumeOverlay
 import com.grokplayer.tv.ui.devices.SendToPcSheet
+import com.grokplayer.tv.ui.devices.TransferManager
 import com.grokplayer.tv.ui.devices.TransferOverlay
 import com.grokplayer.tv.data.ThumbnailCache
 import com.grokplayer.tv.ui.Destination
@@ -122,6 +124,8 @@ fun TvShell() {
     var transferTitle by remember { mutableStateOf<String?>(null) }
     var transferDone by remember { mutableStateOf(0L) }
     var transferTotal by remember { mutableStateOf(0L) }
+    var transferJobId by remember { mutableStateOf<String?>(null) }
+    var transfersOpen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     var destination by remember { mutableStateOf(settings.startScreen) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -144,6 +148,15 @@ fun TvShell() {
     DisposableEffect(Unit) {
         link.start()
         onDispose { link.stop() }
+    }
+    LaunchedEffect(linkUi.connectedId) {
+        val id = linkUi.connectedId
+        if (id == null) {
+            link.watch(null)
+            return@LaunchedEffect
+        }
+        val pc = linkUi.paired.firstOrNull { it.id == id } ?: return@LaunchedEffect
+        link.watch(pc)
     }
 
     LaunchedEffect(Unit) {
@@ -188,6 +201,10 @@ fun TvShell() {
     backState.goHome = { destination = Destination.Home }
     AppBack.handler = {
         when {
+            link.ui.value.pin != null -> {
+                link.cancelPair()
+                true
+            }
             backState.hub.dispatch() -> true
             backState.playing -> {
                 backState.closePlayer()
@@ -217,11 +234,12 @@ fun TvShell() {
                 .background(GrokInk),
         ) {
             val playing = session
+            val modalOpen = deviceMenuPc != null || hubPc != null || searchOpen || transfersOpen
             Row(
                 Modifier
                     .fillMaxSize()
                     .focusProperties {
-                        if (session != null) {
+                        if (session != null || modalOpen) {
                             canFocus = false
                             onEnter = { FocusRequester.Cancel }
                         }
@@ -274,6 +292,7 @@ fun TvShell() {
                                 },
                                 canSend = linkUi.paired.isNotEmpty(),
                                 onSend = { sendVideo = it },
+                                remote = linkUi.remote,
                                 focusVideoId = focusVideoId,
                                 onFocusConsumed = { focusVideoId = null },
                                 modifier = Modifier.fillMaxSize(),
@@ -289,6 +308,8 @@ fun TvShell() {
                                     session = PlaySession(queue, index)
                                 },
                                 onNotice = { notice = it },
+                                canSend = linkUi.paired.isNotEmpty(),
+                                onSend = { sendVideo = it },
                                 focusStreamId = focusStreamId,
                                 onFocusConsumed = { focusStreamId = null },
                                 modifier = Modifier.fillMaxSize(),
@@ -318,6 +339,7 @@ fun TvShell() {
                                 link = link,
                                 onOpenDevice = { hubPc = it },
                                 onDeviceMenu = { deviceMenuPc = it },
+                                onOpenTransfers = { transfersOpen = true },
                                 focusSettingKey = focusSettingKey,
                                 onFocusConsumed = { focusSettingKey = null },
                                 modifier = Modifier.fillMaxSize(),
@@ -397,12 +419,12 @@ fun TvShell() {
                         video = video,
                         pcs = pcs,
                         onDismiss = { sendVideo = null },
-                        onSend = { pc, mode, whenPlay ->
+                        onSend = { pc, mode, whenPlay, startOver ->
                             sendVideo = null
                             transferTitle = video.title
                             transferDone = 0
                             transferTotal = 0
-                            link.send(pc, video, mode, whenPlay) { done, total ->
+                            transferJobId = link.send(pc, video, mode, whenPlay, startOver) { done, total ->
                                 scope.launch(Dispatchers.Main.immediate) {
                                     transferDone = done
                                     transferTotal = total
@@ -418,15 +440,35 @@ fun TvShell() {
                     title = title,
                     done = transferDone,
                     total = transferTotal,
-                    onBackground = { transferTitle = null },
-                    onCancel = { transferTitle = null },
+                    onBackground = {
+                        transferTitle = null
+                        transfersOpen = true
+                    },
+                    onCancel = {
+                        transferJobId?.let { link.cancelJob(it) }
+                        transferTitle = null
+                        transferJobId = null
+                    },
                 )
+            }
+            if (transfersOpen) {
+                TransferManager(link = link, onClose = { transfersOpen = false })
+            }
+            linkUi.remote?.resume?.let { offer ->
+                val pc = linkUi.paired.firstOrNull { it.id == linkUi.connectedId }
+                if (pc != null) {
+                    PcResumeOverlay(
+                        offer = offer,
+                        onContinue = { link.command(pc, "resumeContinue") },
+                        onStartOver = { link.command(pc, "resumeStart") },
+                    )
+                }
             }
             hubPc?.let { pc ->
                 DeviceHub(link = link, pc = pc, onClose = { hubPc = null })
             }
             deviceMenuPc?.let { pc ->
-                val connected = linkUi.nearby.any { it.id == pc.id }
+                val connected = linkUi.isConnected(pc.id)
                 DeviceOptions(
                     pc = pc,
                     connected = connected,
@@ -437,11 +479,12 @@ fun TvShell() {
                     onDisconnect = {
                         link.disconnect(pc.id)
                         deviceMenuPc = null
+                        hubPc = null
                     },
                     onRemove = {
                         link.forget(pc.id)
                         deviceMenuPc = null
-                        if (hubPc?.id == pc.id) hubPc = null
+                        hubPc = null
                     },
                     onDismiss = { deviceMenuPc = null },
                 )

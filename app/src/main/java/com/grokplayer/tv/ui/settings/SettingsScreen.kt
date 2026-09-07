@@ -95,6 +95,7 @@ fun SettingsScreen(
     link: LinkController,
     onOpenDevice: (PairedPc) -> Unit = {},
     onDeviceMenu: (PairedPc) -> Unit = {},
+    onOpenTransfers: () -> Unit = {},
     focusSettingKey: String? = null,
     onFocusConsumed: () -> Unit = {},
 ) {
@@ -224,6 +225,7 @@ fun SettingsScreen(
                         link = link,
                         onOpenDevice = onOpenDevice,
                         onDeviceMenu = onDeviceMenu,
+                        onOpenTransfers = onOpenTransfers,
                         firstDetailFocus = firstDetailFocus,
                         settingKeys = settingKeys,
                         categoryFocus = categoryRequester(category),
@@ -257,6 +259,7 @@ private fun CategoryDetails(
     link: LinkController,
     onOpenDevice: (PairedPc) -> Unit,
     onDeviceMenu: (PairedPc) -> Unit,
+    onOpenTransfers: () -> Unit,
     firstDetailFocus: FocusRequester,
     settingKeys: Map<String, FocusRequester>,
     categoryFocus: FocusRequester,
@@ -314,6 +317,7 @@ private fun CategoryDetails(
                 leftFocus = categoryFocus,
                 onOpen = onOpenDevice,
                 onDeviceMenu = onDeviceMenu,
+                onOpenTransfers = onOpenTransfers,
                 onEnterDetails = onEnterDetails,
             )
         }

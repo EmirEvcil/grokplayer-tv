@@ -44,6 +44,8 @@ import com.grokplayer.tv.ui.components.FocusableAction
 import com.grokplayer.tv.ui.theme.RememberFocusLock
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.grokplayer.tv.data.LibraryVideo
 import com.grokplayer.tv.data.formatClock
 import com.grokplayer.tv.data.link.LinkController
@@ -51,6 +53,7 @@ import com.grokplayer.tv.data.link.PairedPc
 import com.grokplayer.tv.data.link.RemoteState
 import com.grokplayer.tv.data.link.SendMode
 import com.grokplayer.tv.data.link.SendWhen
+import com.grokplayer.tv.data.link.ResumeOffer
 import com.grokplayer.tv.data.link.TransferJob
 import com.grokplayer.tv.ui.theme.GrokInk
 import com.grokplayer.tv.ui.theme.GrokMuted
@@ -70,19 +73,22 @@ fun DevicesSection(
     leftFocus: FocusRequester,
     onOpen: (PairedPc) -> Unit,
     onDeviceMenu: (PairedPc) -> Unit,
+    onOpenTransfers: () -> Unit,
     onEnterDetails: () -> Unit,
 ) {
     val ui by link.ui.collectAsState()
+    val unpaired = ui.nearby.filter { seen -> ui.paired.none { it.id == seen.id } }
+    val activeJobs = ui.jobs.count { it.status == "sending" || it.status == "streaming" }
     Column(Modifier.fillMaxWidth()) {
         Text(
-            "Aynı ev ağındaki GrokPlayer PC ile eşleş. Video gönder, kopyala veya yayınla; kumanda ile PC’yi yönet.",
+            "Aynı ağdaki açık GrokPlayer PC’leri gör. PIN ile eşleş, sonra bağlan, gönder veya yayını durdur.",
             style = GrokType.cardMeta,
             color = GrokMuted,
             modifier = Modifier.padding(bottom = 12.dp),
         )
         DeviceRow(
             title = "Bu TV görünür",
-            meta = if (ui.visible) "Diğer cihazlar bu TV’yi görebilir" else "Eşleşme ve keşif kapalı",
+            meta = if (ui.visible) "Keşif açık · PC’ler bu TV’yi görebilir" else "Keşif kapalı",
             value = if (ui.visible) "Açık" else "Kapalı",
             modifier = Modifier
                 .focusRequester(firstFocus)
@@ -94,8 +100,9 @@ fun DevicesSection(
             title = "Yeni cihaz eşleştir",
             meta = when {
                 !ui.visible -> "Önce görünürlüğü aç"
-                ui.nearby.isEmpty() -> "PC’de GrokPlayer açık olsun"
-                else -> ui.nearby.joinToString { it.name }
+                unpaired.isEmpty() && ui.nearby.isEmpty() -> "Açık GrokPlayer aranıyor…"
+                unpaired.isNotEmpty() -> unpaired.joinToString { it.name }
+                else -> "Yeni PC için PIN göster"
             },
             value = "PIN göster",
             enabled = ui.visible,
@@ -103,31 +110,62 @@ fun DevicesSection(
             onClick = { if (ui.visible) link.beginPair() },
             modifier = Modifier.focusProperties { left = leftFocus },
         )
+        DeviceRow(
+            title = "Aktarımlar",
+            meta = if (activeJobs == 0) "Kopya ve yayınları yönet" else "$activeJobs aktif iş",
+            value = "Aç",
+            onFocus = onEnterDetails,
+            onClick = onOpenTransfers,
+            modifier = Modifier.focusProperties { left = leftFocus },
+        )
+        if (unpaired.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Text("Yakında", style = GrokType.eyebrow, color = GrokSoft, modifier = Modifier.padding(bottom = 6.dp))
+            unpaired.forEach { pc ->
+                DeviceRow(
+                    title = pc.name,
+                    meta = "${pc.host}:${pc.port} · GrokPlayer açık",
+                    value = "Eşleş",
+                    online = true,
+                    onFocus = onEnterDetails,
+                    onClick = { if (ui.visible) link.beginPair() },
+                    modifier = Modifier.focusProperties { left = leftFocus },
+                )
+            }
+        }
         Spacer(Modifier.height(10.dp))
         if (ui.paired.isEmpty()) {
             Text("Henüz eşleşmiş cihaz yok.", style = GrokType.cardMeta, color = GrokMuted)
         } else {
+            Text("Eşleşmiş", style = GrokType.eyebrow, color = GrokSoft, modifier = Modifier.padding(bottom = 6.dp))
             ui.paired.forEach { pc ->
                 val jobs = ui.jobs.filter { it.pcId == pc.id }
-                val live = ui.nearby.any { it.id == pc.id }
+                val live = ui.isLive(pc.id)
+                val linked = ui.isConnected(pc.id)
                 DeviceRow(
                     title = pc.name,
                     meta = buildString {
-                        append(if (live) "Çevrimiçi" else "Bekleniyor")
+                        append(
+                            when {
+                                linked -> "Bağlı"
+                                live -> "Çevrimiçi"
+                                else -> "Bekleniyor"
+                            },
+                        )
                         append(" · ")
                         append(pc.host)
-                        val playing = ui.remote?.title
+                        val playing = if (linked) ui.remote?.title else null
                         if (playing != null) append(" · $playing")
                         val active = jobs.firstOrNull { it.status == "sending" || it.status == "streaming" }
                         if (active != null) append(" · ${active.status}")
                     },
-                    value = if (live) "Yönet" else "Bağlan",
-                    online = live,
-                    onFocus = {
-                        onEnterDetails()
-                        if (ui.visible) link.watch(pc)
+                    value = if (linked) "Yönet" else "Bağlan",
+                    online = live || linked,
+                    onFocus = onEnterDetails,
+                    onClick = {
+                        if (!linked) link.connect(pc)
+                        onOpen(pc)
                     },
-                    onClick = { onOpen(pc) },
                     onLongClick = { onDeviceMenu(pc) },
                     modifier = Modifier.focusProperties { left = leftFocus },
                 )
@@ -138,42 +176,21 @@ fun DevicesSection(
 
 @Composable
 fun PairPinOverlay(pin: String, onCancel: () -> Unit) {
-    RememberFocusLock()
-    InterceptBack { onCancel(); true }
-    BackHandler(onBack = onCancel)
     val cancelFocus = remember { FocusRequester() }
-    LaunchedEffect(pin) {
-        repeat(4) {
-            kotlinx.coroutines.delay(40)
-            runCatching { cancelFocus.requestFocus() }
-        }
-    }
-    AbsorbOpeningOk {
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(GrokInk.copy(alpha = 0.62f))
-            .onFocusChanged { state ->
-                if (!state.hasFocus && !state.isFocused) {
-                    runCatching { cancelFocus.requestFocus() }
-                }
-            },
-        contentAlignment = Alignment.Center,
+    Dialog(
+        onDismissRequest = onCancel,
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false,
+        ),
     ) {
         Column(
             Modifier
                 .width(460.dp)
                 .background(GrokSurface, RoundedCornerShape(14.dp))
                 .border(1.dp, GrokYellow.copy(0.28f), RoundedCornerShape(14.dp))
-                .padding(22.dp)
-                .focusProperties {
-                    left = FocusRequester.Cancel
-                    right = FocusRequester.Cancel
-                    up = FocusRequester.Cancel
-                    down = FocusRequester.Cancel
-                    previous = FocusRequester.Cancel
-                    next = FocusRequester.Cancel
-                },
+                .padding(22.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text("BU TV’Yİ EŞLEŞTİR", style = GrokType.eyebrow, color = GrokSoft)
@@ -191,23 +208,31 @@ fun PairPinOverlay(pin: String, onCancel: () -> Unit) {
                     }
                 }
             }
-            Text("Aynı Wi‑Fi gerekli · 3 dakika", style = GrokType.cardMeta, color = GrokMuted, modifier = Modifier.padding(top = 12.dp))
-            FocusText(
-                "İptal",
+            Text("Geri veya İptal ile kapat  ·  3 dakika", style = GrokType.cardMeta, color = GrokMuted, modifier = Modifier.padding(top = 12.dp))
+            FocusableAction(
                 onClick = onCancel,
                 modifier = Modifier
                     .padding(top = 16.dp)
                     .fillMaxWidth()
-                    .focusRequester(cancelFocus)
-                    .focusProperties {
-                        left = cancelFocus
-                        right = cancelFocus
-                        up = cancelFocus
-                        down = cancelFocus
-                    },
-            )
+                    .focusRequester(cancelFocus),
+            ) { focused ->
+                Text(
+                    "İptal",
+                    style = GrokType.button,
+                    color = if (focused) GrokInk else GrokWhite,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(if (focused) GrokYellow else Color.Transparent, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 11.dp),
+                )
+            }
         }
-    }
+        LaunchedEffect(pin) {
+            repeat(10) {
+                kotlinx.coroutines.delay(50)
+                runCatching { cancelFocus.requestFocus() }
+            }
+        }
     }
 }
 
@@ -221,8 +246,8 @@ fun DeviceHub(
     val remote = ui.remote
     val jobs = ui.jobs.filter { it.pcId == pc.id }
     DisposableEffect(pc.id) {
-        link.watch(pc)
-        onDispose { link.watch(null) }
+        link.connect(pc)
+        onDispose { }
     }
     InterceptBack { onClose(); true }
     BackHandler(onBack = onClose)
@@ -234,7 +259,11 @@ fun DeviceHub(
     ) {
         Text(pc.name, style = GrokType.pageTitle, color = GrokWhite)
         Text(
-            if (remote != null) "Bağlı · durum anlık" else "Bağlanıyor…",
+            when {
+                remote != null && ui.isConnected(pc.id) -> "Bağlı · durum anlık"
+                ui.isConnected(pc.id) -> "Bağlanıyor…"
+                else -> "Bağlantı koptu"
+            },
             style = GrokType.heroMeta,
             color = GrokMuted,
             modifier = Modifier.padding(top = 4.dp, bottom = 16.dp),
@@ -298,39 +327,61 @@ fun DeviceHub(
 fun SendToPcSheet(
     video: LibraryVideo,
     pcs: List<PairedPc>,
-    onSend: (PairedPc, SendMode, SendWhen) -> Unit,
+    onSend: (PairedPc, SendMode, SendWhen, Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var pc by remember { mutableStateOf(pcs.first()) }
-    var mode by remember { mutableStateOf(SendMode.Copy) }
+    var mode by remember { mutableStateOf(if (video.isStream || !video.originUrl.isNullOrBlank()) SendMode.Stream else SendMode.Copy) }
     var whenPlay by remember { mutableStateOf(SendWhen.PlayNow) }
+    var startOver by remember { mutableStateOf(true) }
+    val first = remember { FocusRequester() }
     InterceptBack { onDismiss(); true }
     BackHandler(onBack = onDismiss)
     Box(Modifier.fillMaxSize().background(GrokInk.copy(0.62f)), contentAlignment = Alignment.Center) {
         Column(
             Modifier
                 .width(520.dp)
+                .fillMaxHeight(0.88f)
                 .background(GrokSurface, RoundedCornerShape(14.dp))
                 .border(1.dp, GrokYellow.copy(0.25f), RoundedCornerShape(14.dp))
                 .padding(18.dp),
         ) {
             Text("Gönder", style = GrokType.section, color = GrokWhite)
-            Text("${video.title}  →  ${pc.name}", style = GrokType.cardMeta, color = GrokMuted, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
-            CycleRow("Hedef", pc.name) {
-                val i = pcs.indexOf(pc)
-                pc = pcs[(i + 1) % pcs.size]
+            Text(video.title, style = GrokType.cardMeta, color = GrokMuted, modifier = Modifier.padding(top = 4.dp, bottom = 10.dp))
+            Column(
+                Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Text("Hedef", style = GrokType.eyebrow, color = GrokSoft)
+                pcs.forEachIndexed { index, item ->
+                    ChoiceRow(
+                        item.name,
+                        item.host,
+                        selected = item.id == pc.id,
+                        onClick = { pc = item },
+                        modifier = if (index == 0) Modifier.focusRequester(first) else Modifier,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("Nasıl gitsin", style = GrokType.eyebrow, color = GrokSoft)
+                ChoiceRow("Yayınla", "VOD olarak aç, kopyalama", selected = mode == SendMode.Stream, onClick = { mode = SendMode.Stream })
+                ChoiceRow("Kopyala", "Dosyayı PC’ye yükle", selected = mode == SendMode.Copy, onClick = { mode = SendMode.Copy })
+                Spacer(Modifier.height(8.dp))
+                Text("Ne olsun", style = GrokType.eyebrow, color = GrokSoft)
+                ChoiceRow("Hemen oynat", "PC şimdi açsın", selected = whenPlay == SendWhen.PlayNow, onClick = { whenPlay = SendWhen.PlayNow })
+                ChoiceRow("Listeye ekle", "Sıraya koy", selected = whenPlay == SendWhen.Queue, onClick = { whenPlay = SendWhen.Queue })
+                Spacer(Modifier.height(8.dp))
+                Text("Kaldığın yer", style = GrokType.eyebrow, color = GrokSoft)
+                ChoiceRow("Baştan oynat", "Sıfırdan başla", selected = startOver, onClick = { startOver = true })
+                ChoiceRow("Kaldığın yerden", "PC’deki kaldığın saniyeden devam", selected = !startOver, onClick = { startOver = false })
             }
-            CycleRow("Nasıl gitsin", if (mode == SendMode.Copy) "Kopyala ve oynat" else "Yayınla") {
-                mode = if (mode == SendMode.Copy) SendMode.Stream else SendMode.Copy
-            }
-            CycleRow("Ne olsun", if (whenPlay == SendWhen.PlayNow) "Hemen oynat" else "Listeye ekle") {
-                whenPlay = if (whenPlay == SendWhen.PlayNow) SendWhen.Queue else SendWhen.PlayNow
-            }
-            Text("İlk açılışta PC genel ayarı kullanılır.", style = GrokType.cardMeta, color = GrokMuted, modifier = Modifier.padding(top = 8.dp, bottom = 12.dp))
-            FocusText("Gönder", onClick = { onSend(pc, mode, whenPlay) })
+            Spacer(Modifier.height(10.dp))
+            FocusText("Gönder", onClick = { onSend(pc, mode, whenPlay, startOver) })
             FocusText("Vazgeç", onClick = onDismiss)
         }
     }
+    LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
 }
 
 @Composable
@@ -357,8 +408,147 @@ fun TransferOverlay(
             }
             Text("$pct%  ·  ${done / 1024 / 1024} / ${total / 1024 / 1024} MB", style = GrokType.cardMeta, color = GrokSoft, modifier = Modifier.padding(top = 8.dp, bottom = 14.dp))
             FocusText("Arka planda sürdür", onBackground)
-            FocusText("İptal", onCancel)
+            FocusText("Durdur", onCancel)
         }
+    }
+}
+
+@Composable
+fun PcResumeOverlay(
+    offer: ResumeOffer,
+    onContinue: () -> Unit,
+    onStartOver: () -> Unit,
+) {
+    val first = remember { FocusRequester() }
+    Dialog(
+        onDismissRequest = onStartOver,
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false,
+        ),
+    ) {
+        Column(
+            Modifier
+                .width(460.dp)
+                .background(GrokSurface, RoundedCornerShape(14.dp))
+                .border(1.dp, GrokYellow.copy(0.28f), RoundedCornerShape(14.dp))
+                .padding(22.dp),
+        ) {
+            Text("KALDIĞIN YER", style = GrokType.eyebrow, color = GrokSoft)
+            Text(offer.title.ifBlank { "Video" }, style = GrokType.section, color = GrokWhite, modifier = Modifier.padding(top = 8.dp))
+            Text(
+                "${(offer.seconds * 1000).toLong().formatClock()} / ${(offer.duration * 1000).toLong().formatClock()} noktasından devam et?",
+                style = GrokType.cardMeta,
+                color = GrokMuted,
+                modifier = Modifier.padding(top = 6.dp, bottom = 14.dp),
+            )
+            FocusableAction(
+                onClick = onContinue,
+                modifier = Modifier.fillMaxWidth().focusRequester(first),
+            ) { focused ->
+                Text(
+                    "Devam et",
+                    style = GrokType.button,
+                    color = if (focused) GrokInk else GrokWhite,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(if (focused) GrokYellow else Color.Transparent, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 11.dp),
+                )
+            }
+            FocusableAction(
+                onClick = onStartOver,
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            ) { focused ->
+                Text(
+                    "Baştan oynat",
+                    style = GrokType.button,
+                    color = if (focused) GrokInk else GrokWhite,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(if (focused) GrokYellow else Color.Transparent, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 11.dp),
+                )
+            }
+        }
+        LaunchedEffect(offer.seconds) {
+            repeat(8) {
+                kotlinx.coroutines.delay(40)
+                runCatching { first.requestFocus() }
+            }
+        }
+    }
+}
+
+@Composable
+fun TransferManager(
+    link: LinkController,
+    onClose: () -> Unit,
+) {
+    val ui by link.ui.collectAsState()
+    val first = remember { FocusRequester() }
+    InterceptBack { onClose(); true }
+    BackHandler(onBack = onClose)
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(GrokInk)
+            .padding(start = 28.dp, end = 28.dp, top = 22.dp, bottom = 16.dp),
+    ) {
+        Text("Aktarımlar", style = GrokType.pageTitle, color = GrokWhite)
+        Text("Kopya ve yayınları durdur", style = GrokType.heroMeta, color = GrokMuted, modifier = Modifier.padding(top = 4.dp, bottom = 16.dp))
+        if (ui.jobs.isEmpty()) {
+            Text("Aktif veya geçmiş iş yok.", style = GrokType.cardMeta, color = GrokMuted)
+        } else {
+            ui.jobs.forEachIndexed { index, job ->
+                val pcName = ui.paired.firstOrNull { it.id == job.pcId }?.name ?: job.pcId
+                val running = job.status == "sending" || job.status == "streaming" || job.status == "starting"
+                DeviceRow(
+                    title = job.title,
+                    meta = "$pcName · ${job.kind} · ${job.status}",
+                    value = if (running) "Durdur" else job.status,
+                    modifier = if (index == 0) Modifier.focusRequester(first) else Modifier,
+                    onClick = { if (running) link.cancelJob(job.id) },
+                )
+            }
+        }
+        Text("Geri  ·  Kapat", style = GrokType.cardMeta, color = GrokMuted, modifier = Modifier.padding(top = 16.dp))
+    }
+    LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
+}
+
+@Composable
+private fun ChoiceRow(
+    title: String,
+    meta: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused = interaction.collectIsFocusedAsState().value
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(bottom = 4.dp)
+            .background(
+                when {
+                    focused -> GrokYellow
+                    selected -> GrokYellow.copy(alpha = 0.18f)
+                    else -> GrokInk
+                },
+                RoundedCornerShape(8.dp),
+            )
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = GrokType.button, color = if (focused) GrokInk else GrokWhite)
+            Text(meta, style = GrokType.cardMeta, color = if (focused) GrokInk.copy(alpha = 0.7f) else GrokMuted)
+        }
+        Text(if (selected) "●" else "○", style = GrokType.heroMeta, color = if (focused) GrokInk else GrokSoft)
     }
 }
 

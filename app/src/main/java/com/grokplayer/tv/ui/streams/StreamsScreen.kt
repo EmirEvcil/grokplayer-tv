@@ -86,6 +86,8 @@ fun StreamsScreen(
     downloadHeight: Int,
     onPlay: (List<LibraryVideo>, Int) -> Unit,
     onNotice: (String) -> Unit,
+    canSend: Boolean = false,
+    onSend: (LibraryVideo) -> Unit = {},
     focusStreamId: String? = null,
     onFocusConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -302,6 +304,11 @@ fun StreamsScreen(
             StreamOptions(
                 item = item,
                 downloadStatus = downloads.statusOf(item.url),
+                canSend = canSend,
+                onSend = {
+                    optionsFor = null
+                    onSend(item.toVideo())
+                },
                 onPlay = {
                     optionsFor = null
                     savedScrollIndex = gridState.firstVisibleItemIndex
@@ -468,6 +475,8 @@ private fun StreamOptions(
     item: StreamItem,
     downloadStatus: com.grokplayer.tv.data.DownloadStatus?,
     onPlay: () -> Unit,
+    canSend: Boolean = false,
+    onSend: () -> Unit = {},
     onDownload: () -> Unit,
     onFavorite: () -> Unit,
     onDelete: () -> Unit,
@@ -494,6 +503,9 @@ private fun StreamOptions(
         ) {
             Text(item.title, style = GrokType.section, color = GrokWhite)
             OptionLine(stringResource(R.string.resume), onPlay, Modifier.focusRequester(first))
+            if (canSend) {
+                OptionLine("PC’ye gönder", onSend)
+            }
             if (item.kind == StreamKind.Vod) {
                 val label = when (downloadStatus) {
                     com.grokplayer.tv.data.DownloadStatus.Queued,

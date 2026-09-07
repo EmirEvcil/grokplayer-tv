@@ -48,6 +48,7 @@ import com.grokplayer.tv.data.LibraryVideo
 import com.grokplayer.tv.data.StorageSource
 import com.grokplayer.tv.data.VideoSort
 import com.grokplayer.tv.data.formatClock
+import com.grokplayer.tv.data.link.RemoteState
 import com.grokplayer.tv.ui.components.EmptyState
 import com.grokplayer.tv.ui.components.FilterChip
 import com.grokplayer.tv.ui.components.FocusableAction
@@ -57,6 +58,7 @@ import com.grokplayer.tv.ui.components.VideoPoster
 import com.grokplayer.tv.ui.theme.InterceptBack
 import com.grokplayer.tv.ui.theme.GrokInk
 import com.grokplayer.tv.ui.theme.GrokMuted
+import com.grokplayer.tv.ui.theme.GrokPink
 import com.grokplayer.tv.ui.theme.GrokSurface
 import com.grokplayer.tv.ui.theme.GrokType
 import com.grokplayer.tv.ui.theme.GrokWhite
@@ -74,6 +76,7 @@ fun VideosScreen(
     onPlay: (List<LibraryVideo>, Int, Boolean) -> Unit,
     onSend: (LibraryVideo) -> Unit = {},
     canSend: Boolean = false,
+    remote: RemoteState? = null,
     focusVideoId: String? = null,
     onFocusConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -288,6 +291,9 @@ fun VideosScreen(
                         VideoTile(
                             video = video,
                             progress = library.progressFraction(video),
+                            onPc = remote?.hasVideo(video.title) == true,
+                            pcPlaying = remote?.isCurrent(video.title) == true,
+                            pcPaused = remote?.paused == true,
                             modifier = Modifier
                                 .then(
                                     if (index == 0 && !lastWasAddFolder) {
@@ -413,6 +419,9 @@ private fun VideoTile(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onPc: Boolean = false,
+    pcPlaying: Boolean = false,
+    pcPaused: Boolean = false,
 ) {
     FocusableAction(
         onClick = onClick,
@@ -431,6 +440,28 @@ private fun VideoTile(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f),
+                overlay = {
+                    if (onPc || pcPlaying) {
+                        Box(Modifier.fillMaxSize()) {
+                            val label = when {
+                                pcPlaying && pcPaused -> "PC DURAKLATILDI"
+                                pcPlaying -> "PC OYNATIYOR"
+                                else -> "PC’DE"
+                            }
+                            val fill = if (pcPlaying) GrokYellow else GrokPink
+                            Text(
+                                label,
+                                style = GrokType.cardMeta,
+                                color = GrokInk,
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(6.dp)
+                                    .background(fill, RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                },
             )
             Text(video.title, style = GrokType.cardTitle, color = GrokWhite, modifier = Modifier.padding(top = 8.dp))
             Text(
