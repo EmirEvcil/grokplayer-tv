@@ -15,7 +15,6 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
@@ -35,6 +34,7 @@ object ExoFrameGrab {
         timeoutMs: Long = 4_000L,
         rejectBlack: Boolean = true,
     ): Bitmap? {
+        if (ThumbnailCache.playbackActive) return null
         return try {
             synchronized(lock) { grabLocked(context, uri, timeMs, timeoutMs, rejectBlack) }
         } catch (_: Throwable) {
@@ -78,14 +78,14 @@ object ExoFrameGrab {
                 host.addView(tv, params)
                 texture = tv
                 root = host
-                val http = DefaultHttpDataSource.Factory()
-                    .setUserAgent(StreamProbe.USER_AGENT)
-                    .setAllowCrossProtocolRedirects(true)
-                    .setConnectTimeoutMs(8_000)
-                    .setReadTimeoutMs(8_000)
                 val exo = ExoPlayer.Builder(activity.applicationContext)
                     .setMediaSourceFactory(
-                        DefaultMediaSourceFactory(DefaultDataSource.Factory(activity.applicationContext, http)),
+                        DefaultMediaSourceFactory(
+                            DefaultDataSource.Factory(
+                                activity.applicationContext,
+                                StreamHttp.dataSourceFactory(activity.applicationContext),
+                            ),
+                        ),
                     )
                     .setRenderersFactory(
                         DefaultRenderersFactory(activity.applicationContext)
@@ -128,6 +128,13 @@ object ExoFrameGrab {
             }
         }
         posted.await(2_000, TimeUnit.MILLISECONDS)
+        if (ThumbnailCache.playbackActive) {
+            main.post {
+                runCatching { player?.release() }
+                runCatching { texture?.let { root?.removeView(it) } }
+            }
+            return null
+        }
         val wait = timeoutMs.coerceAtLeast(5_000L)
         ready.await(wait - 2_000L, TimeUnit.MILLISECONDS)
         val remote = uri.scheme == "http" || uri.scheme == "https"

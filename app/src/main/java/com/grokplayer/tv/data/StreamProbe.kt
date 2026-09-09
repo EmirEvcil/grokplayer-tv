@@ -52,6 +52,11 @@ object StreamProbe {
         }
     }
 
+    fun playUrl(url: String): String {
+        if (mimeForUrl(url) != null) return url
+        return resolveFinalUrl(url)
+    }
+
     fun resolveFinalUrl(url: String): String {
         if (!url.startsWith("http://") && !url.startsWith("https://")) return url
         return try {

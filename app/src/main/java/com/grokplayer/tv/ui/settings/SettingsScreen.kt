@@ -98,6 +98,8 @@ fun SettingsScreen(
     onOpenTransfers: () -> Unit = {},
     focusSettingKey: String? = null,
     onFocusConsumed: () -> Unit = {},
+    focusDeviceId: String? = null,
+    onDeviceFocusConsumed: () -> Unit = {},
 ) {
     var category by remember { mutableStateOf(initialCategory) }
     var zone by remember { mutableStateOf(SettingsZone.Categories) }
@@ -171,13 +173,15 @@ fun SettingsScreen(
                         modifier = Modifier
                             .focusRequester(categoryRequester(item))
                             .then(
-                                if (item == category) {
+                                if (item == category && zone != SettingsZone.Details) {
                                     Modifier.focusRequester(firstFocus)
                                 } else {
                                     Modifier
                                 },
                             )
                             .focusProperties {
+                                canFocus = focusDeviceId == null &&
+                                    (zone == SettingsZone.Categories || item == category)
                                 left = railFocus
                                 right = FocusRequester.Cancel
                                 up = previous?.let { categoryRequester(it) } ?: FocusRequester.Default
@@ -196,7 +200,9 @@ fun SettingsScreen(
                             }
                             .onFocusChanged { state ->
                                 if (state.isFocused) {
-                                    category = item
+                                    if (item != category) {
+                                        category = item
+                                    }
                                     zone = SettingsZone.Categories
                                     onCategoryChanged(item)
                                 }
@@ -230,6 +236,10 @@ fun SettingsScreen(
                         settingKeys = settingKeys,
                         categoryFocus = categoryRequester(category),
                         onEnterDetails = { zone = SettingsZone.Details },
+                        focusDeviceId = focusDeviceId,
+                        onDeviceFocusConsumed = onDeviceFocusConsumed,
+                        stayInDetails = zone == SettingsZone.Details || focusDeviceId != null,
+                        pageFocus = firstFocus,
                     )
                 }
             }
@@ -264,6 +274,10 @@ private fun CategoryDetails(
     settingKeys: Map<String, FocusRequester>,
     categoryFocus: FocusRequester,
     onEnterDetails: () -> Unit,
+    focusDeviceId: String? = null,
+    onDeviceFocusConsumed: () -> Unit = {},
+    stayInDetails: Boolean = false,
+    pageFocus: FocusRequester? = null,
 ) {
     val context = LocalContext.current
     fun row(key: String, first: Boolean = false): Modifier {
@@ -319,6 +333,10 @@ private fun CategoryDetails(
                 onDeviceMenu = onDeviceMenu,
                 onOpenTransfers = onOpenTransfers,
                 onEnterDetails = onEnterDetails,
+                focusDeviceId = focusDeviceId,
+                onFocusConsumed = onDeviceFocusConsumed,
+                stayInDetails = stayInDetails,
+                pageFocus = pageFocus,
             )
         }
         SettingsCategory.About -> {

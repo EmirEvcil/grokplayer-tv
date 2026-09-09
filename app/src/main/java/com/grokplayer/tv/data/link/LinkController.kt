@@ -3,7 +3,19 @@ package com.grokplayer.tv.data.link
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.util.Log
+import com.grokplayer.tv.data.BrowseListing
+import com.grokplayer.tv.data.BrowseVideo
+import com.grokplayer.tv.data.DownloadOwnership
+import com.grokplayer.tv.data.LibraryStore
 import com.grokplayer.tv.data.LibraryVideo
+import com.grokplayer.tv.data.SharedFolders
+import com.grokplayer.tv.data.StorageSource
+import com.grokplayer.tv.data.StreamHttp
+import com.grokplayer.tv.data.mediaFileKey
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -46,12 +58,15 @@ class LinkController(context: Context) {
     private var udp: DatagramSocket? = null
     private var multicast: WifiManager.MulticastLock? = null
     private var pollJob: Job? = null
+    private var watchGen = 0
     private var fileServer: FileOfferServer? = null
+    val sharedFolders = SharedFolders(app)
     private val cancelledJobs = ConcurrentHashMap.newKeySet<String>()
     private val unauthorized = AtomicBoolean(false)
     private val lastProbeUnreachable = AtomicBoolean(false)
     private var stateMisses = 0
     private var unreachableStreak = 0
+    private var connectedFalseStreak = 0
     private val _ui = MutableStateFlow(
         LinkUi(
             visible = prefs.getBoolean("visible", true),
@@ -73,6 +88,17 @@ class LinkController(context: Context) {
         }
         scope.launch { listenUdp() }
         scope.launch { tick() }
+        ensureFileServer()
+    }
+
+    fun ensureFileServer() {
+        if (fileServer != null) return
+        fileServer = FileOfferServer(
+            tokens = { _ui.value.paired.map { it.token }.toSet() },
+            folders = sharedFolders,
+            have = { JSONArray() },
+            onProgress = { },
+        ).also { it.start() }
     }
 
     fun stop() {
@@ -89,15 +115,28 @@ class LinkController(context: Context) {
         _ui.update { it.copy(visible = on) }
     }
 
-    fun beginPair() {
+    fun beginPair(target: NearbyPc? = null) {
         if (!_ui.value.visible) return
         val pin = (100000 + Random.nextInt(900000)).toString()
-        _ui.update { it.copy(pin = pin, pinUntil = System.currentTimeMillis() + 180_000, notice = null) }
+        _ui.update {
+            it.copy(
+                pin = pin,
+                pinUntil = System.currentTimeMillis() + 180_000,
+                pairingName = target?.name,
+                notice = null,
+            )
+        }
         scope.launch {
             repeat(90) {
                 if (_ui.value.pin != pin) return@launch
                 announceOffer(pin)
-                _ui.value.nearby.forEach { pc ->
+                val live = _ui.value.nearby
+                val hosts = buildList {
+                    val chosen = target?.let { want -> live.firstOrNull { it.id == want.id } ?: want }
+                    if (chosen != null) add(chosen)
+                    addAll(live.filter { it.id != target?.id })
+                }
+                hosts.forEach { pc ->
                     runCatching {
                         postRaw(pc.host, pc.port, "/v1/expect", JSONObject()
                             .put("tv", tvId)
@@ -146,15 +185,24 @@ class LinkController(context: Context) {
     }
 
     fun cancelPair() {
-        _ui.update { it.copy(pin = null, pinUntil = 0) }
+        _ui.update { it.copy(pin = null, pinUntil = 0, pairingName = null) }
     }
 
     fun connect(pc: PairedPc) {
-        _ui.update { it.copy(connectedId = pc.id) }
+        if (_ui.value.connectedId == pc.id && _ui.value.remote != null) return
+        _ui.update {
+            it.copy(
+                connectingId = pc.id,
+                connectedId = if (it.connectedId == pc.id) it.connectedId else null,
+                notice = null,
+            )
+        }
         watch(pc)
     }
 
     fun disconnect(id: String) {
+        val active = _ui.value.connectedId == id || _ui.value.connectingId == id
+        if (!active) return
         val pc = _ui.value.paired.firstOrNull { it.id == id }
         cancelJobsFor(id)
         dropSession("Bağlantı kesildi")
@@ -166,40 +214,43 @@ class LinkController(context: Context) {
     }
 
     fun forget(id: String) {
-        val pc = _ui.value.paired.firstOrNull { it.id == id }
+        val pc = _ui.value.paired.firstOrNull { it.id == id } ?: return
+        val wasActive = _ui.value.connectedId == id || _ui.value.connectingId == id
         cancelJobsFor(id)
         val next = _ui.value.paired.filterNot { it.id == id }
         savePaired(next)
-        dropSession("Cihaz kaldırıldı")
-        _ui.update { it.copy(paired = next, notice = "Cihaz kaldırıldı") }
-        if (pc != null) {
-            scope.launch {
-                post(pc, "/v1/cmd", JSONObject().put("op", "unpair").toString())
+        if (wasActive) dropSession("Eşleşme unutuldu")
+        _ui.update { it.copy(paired = next, notice = "Eşleşme unutuldu") }
+        scope.launch {
+            if (wasActive) {
+                post(pc, "/v1/cmd", JSONObject().put("op", "disconnect").toString())
             }
+            post(pc, "/v1/cmd", JSONObject().put("op", "unpair").toString())
         }
     }
 
     private fun dropSession(notice: String? = null) {
         stateMisses = 0
         unreachableStreak = 0
+        connectedFalseStreak = 0
         watch(null)
         _ui.update { ui ->
-            val deadId = ui.connectedId
             ui.copy(
                 connectedId = null,
+                connectingId = null,
                 remote = null,
                 notice = notice ?: ui.notice,
-                nearby = if (deadId == null) ui.nearby else ui.nearby.filterNot { it.id == deadId },
             )
         }
     }
 
     fun watch(pc: PairedPc?) {
         pollJob?.cancel()
+        val gen = ++watchGen
         if (pc == null) return
         pollJob = scope.launch {
-            while (isActive) {
-                refreshState(pc)
+            while (isActive && gen == watchGen) {
+                refreshState(pc, gen)
                 delay(800)
             }
         }
@@ -209,7 +260,7 @@ class LinkController(context: Context) {
         scope.launch {
             extra.put("op", op)
             post(pc, "/v1/cmd", extra.toString())
-            refreshState(pc)
+            refreshState(pc, watchGen)
         }
     }
 
@@ -254,6 +305,70 @@ class LinkController(context: Context) {
             }
         }
         return job.id
+    }
+
+    suspend fun browse(pc: PairedPc, path: String): BrowseListing? {
+        val raw = get(pc, "/v1/browse?path=" + java.net.URLEncoder.encode(path, Charsets.UTF_8)) ?: return null
+        return runCatching { parseListing(raw) }.getOrNull()
+    }
+
+    fun fileUrl(pc: PairedPc, path: String): String =
+        "http://${pc.host}:${pc.port}/v1/file?path=" +
+            java.net.URLEncoder.encode(path, Charsets.UTF_8) +
+            "&token=" + java.net.URLEncoder.encode(pc.token, Charsets.UTF_8)
+
+    fun videosFrom(pc: PairedPc, videos: List<BrowseVideo>): List<LibraryVideo> {
+        return videos.map { item ->
+            val url = fileUrl(pc, item.path)
+            LibraryVideo(
+                id = "remote:${pc.id}:${item.path}",
+                title = item.title,
+                uri = android.net.Uri.parse(url),
+                durationMs = 0L,
+                format = "VOD",
+                source = StorageSource.Internal,
+                dateAdded = System.currentTimeMillis(),
+                lastModified = System.currentTimeMillis(),
+                path = null,
+                isLive = false,
+                isStream = true,
+                originUrl = url,
+            )
+        }
+    }
+
+    fun pushProgress(library: LibraryStore) {
+        val pc = _ui.value.paired.firstOrNull { it.id == _ui.value.connectedId } ?: return
+        val items = JSONArray()
+        library.keyedProgressSnapshot().forEach { (key, pos) ->
+            if (pos >= 1_000L) {
+                items.put(JSONObject().put("key", key).put("positionMs", pos))
+            }
+        }
+        if (items.length() == 0) return
+        scope.launch {
+            post(pc, "/v1/progress", JSONObject().put("items", items).toString())
+        }
+    }
+
+    private fun parseListing(raw: String): BrowseListing {
+        val json = JSONObject(raw)
+        val dirs = (json.optJSONArray("dirs")?.orEmpty() ?: emptyList()).map {
+            com.grokplayer.tv.data.BrowseDir(it.optString("name"), it.optString("path"))
+        }
+        val videos = (json.optJSONArray("videos")?.orEmpty() ?: emptyList()).map {
+            BrowseVideo(it.optString("name"), it.optString("path"), it.optLong("size"), it.optString("title"))
+        }
+        val granted = json.optJSONArray("granted")?.let { array ->
+            buildList { for (i in 0 until array.length()) add(array.optString(i)) }
+        }.orEmpty()
+        return BrowseListing(
+            path = json.optString("path"),
+            parent = json.optString("parent").ifBlank { null },
+            dirs = dirs,
+            videos = com.grokplayer.tv.data.MediaOrder.sortByTitle(videos) { it.title },
+            granted = granted,
+        )
     }
 
     fun cancelJob(id: String) {
@@ -408,13 +523,7 @@ class LinkController(context: Context) {
 
     private fun sidecarFiles(video: LibraryVideo): List<File> {
         val videoFile = videoFile(video) ?: return emptyList()
-        val parent = videoFile.parentFile ?: return emptyList()
-        val stem = videoFile.nameWithoutExtension
-        val exts = listOf("srt", "vtt", "ass", "ssa")
-        val suffixes = listOf("", ".tr", ".tur", ".en", ".eng")
-        return suffixes.flatMap { suffix ->
-            exts.mapNotNull { ext -> File(parent, "$stem$suffix.$ext").takeIf { it.isFile } }
-        }.distinctBy { it.absolutePath.lowercase() }
+        return DownloadOwnership.sidecarsBeside(videoFile, subtitlesOnly = true)
     }
 
     private suspend fun listenUdp() {
@@ -449,11 +558,15 @@ class LinkController(context: Context) {
         }
         val paired = _ui.value.paired.firstOrNull { it.id == id }
         if (paired != null && (paired.host != host || paired.port != port)) {
-            val next = _ui.value.paired.map {
-                if (it.id == id) it.copy(host = host, port = port, name = pc.name) else it
+            scope.launch {
+                if (getRaw(paired.host, paired.port, "/v1/hello") != null) return@launch
+                rememberHost(id, host, port)
+                val next = _ui.value.paired.map {
+                    if (it.id == id) it.copy(name = pc.name) else it
+                }
+                savePaired(next)
+                _ui.update { it.copy(paired = next) }
             }
-            savePaired(next)
-            _ui.update { it.copy(paired = next) }
         }
     }
 
@@ -469,7 +582,17 @@ class LinkController(context: Context) {
         val peer = PairedPc(id, json.optString("name").ifBlank { "PC" }, host, port, token)
         val next = listOf(peer) + _ui.value.paired.filterNot { it.id == id }
         savePaired(next)
-        _ui.update { it.copy(paired = next, pin = null, pinUntil = 0, notice = "Eşleşti: ${peer.name}", connectedId = peer.id) }
+        _ui.update {
+            it.copy(
+                paired = next,
+                pin = null,
+                pinUntil = 0,
+                pairingName = null,
+                notice = "Eşleşti: ${peer.name}",
+                connectedId = peer.id,
+                connectingId = null,
+            )
+        }
         markReachable(peer)
         watch(peer)
     }
@@ -539,57 +662,89 @@ class LinkController(context: Context) {
 
     private fun onBye(json: JSONObject) {
         val id = json.optString("pc")
-        if (id.isBlank() || _ui.value.connectedId != id) return
+        if (id.isBlank()) return
+        if (_ui.value.connectedId != id && _ui.value.connectingId != id) return
         dropSession("PC kapandı")
     }
 
-    private suspend fun refreshState(pc: PairedPc) {
+    private suspend fun refreshState(pc: PairedPc, gen: Int) {
+        try {
+            refreshStateInner(pc, gen)
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            Log.w("GrokPlayer", "state poll failed", error)
+        }
+    }
+
+    private suspend fun refreshStateInner(pc: PairedPc, gen: Int) {
+        if (gen != watchGen) return
         unauthorized.set(false)
         val raw = get(pc, "/v1/state")
+        if (gen != watchGen) return
         if (unauthorized.get()) {
             stateMisses++
             unreachableStreak = 0
-            if (stateMisses >= 3) {
+            if (stateMisses >= 3 && gen == watchGen) {
                 dropSession("PC eşleşmeyi kaldırdı")
                 forget(pc.id)
             }
             return
         }
         if (raw == null) {
+            val live = hello(pc)
+            if (live) {
+                lastProbeUnreachable.set(false)
+                unreachableStreak = 0
+            } else if (lastProbeUnreachable.get()) {
+                unreachableStreak++
+            }
             stateMisses++
-            if (lastProbeUnreachable.get()) unreachableStreak++ else unreachableStreak = 0
-            // Refused/unreachable = the PC process is gone. A 200 with an empty
-            // playlist is not a miss and must not drop the session.
-            if (LinkWatch.shouldEndSession(stateMisses, unreachableStreak)) {
-                dropSession("PC kapandı")
+            if (LinkWatch.shouldDropAfterMiss(stateMisses, live) && gen == watchGen) {
+                val connectingOnly = _ui.value.connectingId == pc.id && _ui.value.connectedId != pc.id
+                if (connectingOnly) {
+                    watch(null)
+                    _ui.update { it.copy(connectingId = null, notice = "Bağlanılamadı") }
+                } else {
+                    dropSession("PC kapandı")
+                }
             }
             return
         }
         stateMisses = 0
         unreachableStreak = 0
-        val json = JSONObject(raw)
-        val next = parseState(json, pc.id)
+        val json = runCatching { JSONObject(raw) }.getOrNull() ?: return
+        if (json.has("connected") && !json.optBoolean("connected")) {
+            connectedFalseStreak++
+            if (LinkWatch.shouldDropDisconnected(connectedFalseStreak)) {
+                dropSession("Bağlantı kesildi")
+            }
+            return
+        }
+        connectedFalseStreak = 0
+        val next = runCatching { parseState(json, pc.id) }.getOrNull() ?: return
         val prev = _ui.value.remote
         val staleEmpty = next.playlist.isEmpty() && next.have.isEmpty() && !next.hasMedia &&
             prev != null && (prev.playlist.isNotEmpty() || prev.have.isNotEmpty())
         val live = _ui.value.paired.firstOrNull { it.id == pc.id } ?: pc
         markReachable(live)
-        if (!staleEmpty) {
-            _ui.update { it.copy(remote = next) }
+        _ui.update { ui ->
+            val remote = if (staleEmpty) ui.remote else next
+            ui.copy(connectedId = pc.id, connectingId = null, remote = remote)
         }
     }
 
     private fun parseState(json: JSONObject, pcId: String): RemoteState {
-        fun tracks(key: String) = json.optJSONArray(key).orEmpty().mapNotNull { item ->
+        fun tracks(key: String) = json.optJSONArray(key)?.orEmpty().orEmpty().mapNotNull { item ->
             RemoteTrack(item.optInt("index"), item.optString("label"), item.optBoolean("selected"))
         }
-        fun items() = json.optJSONArray("playlist").orEmpty().mapNotNull { item ->
+        fun items() = json.optJSONArray("playlist")?.orEmpty().orEmpty().mapNotNull { item ->
             RemoteItem(item.optInt("index"), item.optString("title"), item.optBoolean("current"), item.optString("key"))
         }
-        val have = json.optJSONArray("have").orEmpty().mapNotNull { item ->
-            RemoteHave(item.optString("key"), item.optString("title"))
+        val have = json.optJSONArray("have")?.orEmpty().orEmpty().mapNotNull { item ->
+            RemoteHave(item.optString("key"), item.optString("title"), item.optLong("positionMs"))
         }
-        val jobs = json.optJSONArray("jobs").orEmpty().mapNotNull { item ->
+        val jobs = json.optJSONArray("jobs")?.orEmpty().orEmpty().mapNotNull { item ->
             TransferJob(
                 id = item.optString("id"),
                 pcId = pcId,
@@ -688,55 +843,73 @@ class LinkController(context: Context) {
     }
 
     private fun getAt(host: String, port: Int, path: String, token: String): String? {
-        val conn = openAt(host, port, path, "GET", token)
-        conn.connectTimeout = 2000
-        conn.readTimeout = 2500
         lastProbeUnreachable.set(false)
         return try {
-            when (conn.responseCode) {
-                401 -> {
-                    unauthorized.set(true)
-                    null
+            val req = Request.Builder()
+                .url("http://$host:$port$path")
+                .header("Accept", "application/json")
+                .apply { if (token.isNotBlank()) header("X-Grok-Token", token) }
+                .get()
+                .build()
+            StreamHttp.client(app).newBuilder()
+                .connectTimeout(2, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(4, java.util.concurrent.TimeUnit.SECONDS)
+                .writeTimeout(4, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+                .newCall(req)
+                .execute()
+                .use { resp ->
+                val body = resp.body?.string()
+                when {
+                    resp.code == 401 -> {
+                        unauthorized.set(true)
+                        Log.w("GrokPlayer", "GET $path HTTP 401")
+                        null
+                    }
+                    resp.isSuccessful -> body
+                    else -> {
+                        Log.w("GrokPlayer", "GET $path HTTP ${resp.code} ${body?.take(80)}")
+                        null
+                    }
                 }
-                in 200..299 -> conn.inputStream.bufferedReader().readText()
-                else -> null
             }
         } catch (e: Exception) {
             lastProbeUnreachable.set(LinkWatch.isUnreachable(e))
+            Log.w("GrokPlayer", "GET $path ${e.javaClass.simpleName}: ${e.message}")
             null
-        } finally {
-            conn.disconnect()
         }
     }
 
     private fun getRaw(host: String, port: Int, path: String): String? {
-        val conn = openAt(host, port, path, "GET", token = null)
-        conn.connectTimeout = 1500
-        conn.readTimeout = 1500
         return try {
-            if (conn.responseCode !in 200..299) null
-            else conn.inputStream.bufferedReader().readText()
+            val req = Request.Builder().url("http://$host:$port$path").get().build()
+            StreamHttp.client(app).newBuilder()
+                .connectTimeout(1500, java.util.concurrent.TimeUnit.MILLISECONDS)
+                .readTimeout(1500, java.util.concurrent.TimeUnit.MILLISECONDS)
+                .build()
+                .newCall(req)
+                .execute()
+                .use { resp -> if (resp.isSuccessful) resp.body?.string() else null }
         } catch (_: Exception) {
             null
-        } finally {
-            conn.disconnect()
         }
     }
 
     private suspend fun post(pc: PairedPc, path: String, body: String): String? = withContext(Dispatchers.IO) {
-        val bytes = body.toByteArray()
+        val media = "application/json; charset=utf-8".toMediaType()
+        val reqBody = body.toRequestBody(media)
         for (host in hostsFor(pc)) {
-            val conn = openAt(host, pc.port, path, "POST", pc.token)
-            conn.doOutput = true
-            conn.setFixedLengthStreamingMode(bytes.size)
-            conn.setRequestProperty("Content-Type", "application/json")
             val text = try {
-                conn.outputStream.use { it.write(bytes) }
-                conn.inputStream.bufferedReader().readText()
+                val req = Request.Builder()
+                    .url("http://$host:${pc.port}$path")
+                    .header("X-Grok-Token", pc.token)
+                    .post(reqBody)
+                    .build()
+                StreamHttp.client(app).newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) resp.body?.string() else null
+                }
             } catch (_: Exception) {
                 null
-            } finally {
-                conn.disconnect()
             }
             if (text != null) {
                 if (host != pc.host) rememberHost(pc.id, host, pc.port)
@@ -831,12 +1004,51 @@ class LinkController(context: Context) {
     }
 }
 
+internal data class DeviceBuckets(
+    val connected: List<PairedPc>,
+    val paired: List<PairedPc>,
+    val nearby: List<NearbyPc>,
+)
+
+internal data class DeviceActions(
+    val pair: Boolean = false,
+    val connect: Boolean = false,
+    val manage: Boolean = false,
+    val disconnect: Boolean = false,
+    val forget: Boolean = false,
+)
+
 internal object LinkWatch {
     const val UnreachableToDrop = 3
     const val MissesToDrop = 8
 
+    fun buckets(
+        nearby: List<NearbyPc>,
+        paired: List<PairedPc>,
+        connectedId: String?,
+    ): DeviceBuckets {
+        val connected = paired.filter { it.id == connectedId }
+        val rest = paired.filter { it.id != connectedId }
+        val unpaired = nearby.filter { seen -> paired.none { it.id == seen.id } }
+        return DeviceBuckets(connected, rest, unpaired)
+    }
+
+    fun actions(nearby: Boolean, connected: Boolean): DeviceActions = when {
+        nearby -> DeviceActions(pair = true)
+        connected -> DeviceActions(manage = true, disconnect = true, forget = true)
+        else -> DeviceActions(connect = true, forget = true)
+    }
+
+    const val DisconnectedToDrop = 3
+
     fun shouldEndSession(misses: Int, unreachableStreak: Int): Boolean =
         unreachableStreak >= UnreachableToDrop || misses >= MissesToDrop
+
+    fun shouldDropAfterMiss(misses: Int, helloOk: Boolean): Boolean =
+        if (helloOk) misses >= 4 else misses >= 2
+
+    fun shouldDropDisconnected(falseStreak: Int): Boolean =
+        falseStreak >= DisconnectedToDrop
 
     fun isUnreachable(error: Throwable): Boolean {
         var cur: Throwable? = error
@@ -846,6 +1058,7 @@ internal object LinkWatch {
                 is NoRouteToHostException,
                 is UnknownHostException,
                 is PortUnreachableException,
+                is SocketTimeoutException,
                 -> return true
             }
             val msg = cur.message.orEmpty().lowercase()
@@ -867,7 +1080,12 @@ private fun JSONArray.orEmpty(): List<JSONObject> = buildList {
     for (i in 0 until this@orEmpty.length()) add(optJSONObject(i) ?: continue)
 }
 
-internal class FileOfferServer {
+internal class FileOfferServer(
+    private val tokens: () -> Set<String> = { emptySet() },
+    private val folders: SharedFolders? = null,
+    private val have: () -> JSONArray = { JSONArray() },
+    private val onProgress: (JSONArray) -> Unit = {},
+) {
     private var server: ServerSocket? = null
     private val files = LinkedHashMap<String, File>()
 
@@ -930,14 +1148,28 @@ internal class FileOfferServer {
             val line = input.readLine() ?: return
             val parts = line.split(" ")
             val method = parts.getOrNull(0) ?: return
-            val rawPath = parts.getOrNull(1)?.substringBefore('?')?.removePrefix("/") ?: return
+            val request = parts.getOrNull(1) ?: return
+            val rawPath = request.substringBefore('?').removePrefix("/")
+            val query = request.substringAfter('?', "")
             var range: String? = null
+            var token = ""
+            var contentLength = 0
             while (true) {
                 val header = input.readLine() ?: break
                 if (header.isEmpty()) break
                 if (header.startsWith("Range:", ignoreCase = true)) {
                     range = header.substringAfter(':').trim()
                 }
+                if (header.startsWith("X-Grok-Token:", ignoreCase = true)) {
+                    token = header.substringAfter(':').trim()
+                }
+                if (header.startsWith("Content-Length:", ignoreCase = true)) {
+                    contentLength = header.substringAfter(':').trim().toIntOrNull() ?: 0
+                }
+            }
+            if (rawPath.startsWith("v1/")) {
+                serveApi(sock, method, rawPath, query, token, range, contentLength, input)
+                return
             }
             val file = files[java.net.URLDecoder.decode(rawPath, "UTF-8")] ?: return
             val total = file.length()
@@ -969,6 +1201,104 @@ internal class FileOfferServer {
             }
             out.flush()
         }
+    }
+
+    private fun serveApi(
+        sock: java.net.Socket,
+        method: String,
+        rawPath: String,
+        query: String,
+        token: String,
+        range: String?,
+        contentLength: Int,
+        input: java.io.BufferedReader,
+    ) {
+        val out = sock.getOutputStream()
+        val queryToken = queryValue(query, "token")
+        val ok = token.takeIf { it.isNotBlank() } ?: queryToken
+        if (ok.isBlank() || ok !in tokens()) {
+            out.write("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
+            return
+        }
+        when {
+            rawPath == "v1/browse" -> {
+                val path = queryValue(query, "path")
+                val listing = folders?.listing(path) ?: return
+                val body = JSONObject()
+                    .put("path", listing.path)
+                    .put("parent", listing.parent ?: "")
+                    .put("granted", JSONArray(listing.granted))
+                    .put("dirs", JSONArray(listing.dirs.map { JSONObject().put("name", it.name).put("path", it.path) }))
+                    .put("videos", JSONArray(listing.videos.map {
+                        JSONObject().put("name", it.name).put("path", it.path).put("size", it.size).put("title", it.title)
+                    }))
+                    .toString()
+                writeJson(out, body)
+            }
+            rawPath == "v1/file" -> {
+                val path = queryValue(query, "path")
+                val file = folders?.resolve(path)?.takeIf { it.isFile } ?: return
+                streamFile(out, file, range, method)
+            }
+            rawPath == "v1/have" -> writeJson(out, JSONObject().put("items", have()).toString())
+            rawPath == "v1/progress" && method == "POST" -> {
+                val buf = CharArray(contentLength.coerceAtLeast(0))
+                if (contentLength > 0) input.read(buf, 0, buf.size)
+                val items = JSONObject(String(buf)).optJSONArray("items") ?: JSONArray()
+                onProgress(items)
+                writeJson(out, """{"ok":true}""")
+            }
+            else -> out.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
+        }
+    }
+
+    private fun writeJson(out: java.io.OutputStream, body: String) {
+        val bytes = body.toByteArray(Charsets.UTF_8)
+        out.write(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray(),
+        )
+        out.write(bytes)
+        out.flush()
+    }
+
+    private fun streamFile(out: java.io.OutputStream, file: File, range: String?, method: String) {
+        val total = file.length()
+        val (start, end) = parseRange(range, total)
+        val length = end - start + 1
+        val status = if (start == 0L && end == total - 1L) "200 OK" else "206 Partial Content"
+        val head = buildString {
+            append("HTTP/1.1 $status\r\n")
+            append("Content-Type: application/octet-stream\r\n")
+            append("Accept-Ranges: bytes\r\n")
+            append("Content-Length: $length\r\n")
+            if (status.startsWith("206")) append("Content-Range: bytes $start-$end/$total\r\n")
+            append("Connection: close\r\n\r\n")
+        }
+        out.write(head.toByteArray())
+        if (method != "HEAD") {
+            file.inputStream().use { inputFile ->
+                inputFile.skip(start)
+                var left = length
+                val buf = ByteArray(64 * 1024)
+                while (left > 0) {
+                    val n = inputFile.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
+                    if (n <= 0) break
+                    out.write(buf, 0, n)
+                    left -= n
+                }
+            }
+        }
+        out.flush()
+    }
+
+    private fun queryValue(query: String, name: String): String {
+        query.split('&').forEach { part ->
+            val key = part.substringBefore('=')
+            if (key == name) {
+                return java.net.URLDecoder.decode(part.substringAfter('=', ""), "UTF-8")
+            }
+        }
+        return ""
     }
 
     private fun parseRange(header: String?, total: Long): Pair<Long, Long> {

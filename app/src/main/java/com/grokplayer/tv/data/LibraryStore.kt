@@ -27,6 +27,7 @@ class LibraryStore(context: Context) {
         private set
     var progress by mutableStateOf<Map<String, Long>>(emptyList<Pair<String, Long>>().toMap())
         private set
+    private var keyedProgress by mutableStateOf<Map<String, Long>>(emptyMap())
     var extraFolders by mutableStateOf(loadFolders())
         private set
     private var opened by mutableStateOf(loadOpened())
@@ -34,6 +35,8 @@ class LibraryStore(context: Context) {
     private val indexFile = File(app.filesDir, "library_index.json")
     private val durationFile = File(app.filesDir, "duration_cache.json")
     private val scanLock = Mutex()
+    @Volatile
+    private var downloadTitleOf: (String) -> String? = { null }
 
     init {
         loadDurations()
@@ -50,6 +53,20 @@ class LibraryStore(context: Context) {
                 if (parts.size == 2) parts[0] to (parts[1].toLongOrNull() ?: return@mapNotNull null) else null
             }
             .toMap()
+        keyedProgress = prefs.getString("kprogress", "")
+            .orEmpty()
+            .split('|')
+            .mapNotNull {
+                val parts = it.split('=')
+                if (parts.size == 2) parts[0] to (parts[1].toLongOrNull() ?: return@mapNotNull null) else null
+            }
+            .toMap()
+    }
+
+    private fun persistKeyed() {
+        prefs.edit()
+            .putString("kprogress", keyedProgress.entries.joinToString("|") { "${it.key}=${it.value}" })
+            .apply()
     }
 
     suspend fun refresh() {
@@ -59,7 +76,10 @@ class LibraryStore(context: Context) {
                 val result = Perf.measure("scan") { scanAll() }
                 persistIndex(result)
                 persistDurations()
-                result
+                result.map { video ->
+                    val titled = video.path?.let { downloadTitleOf(it) }
+                    if (titled != null && titled != video.title) video.copy(title = titled) else video
+                }
             }
             android.util.Log.i("GrokPlayer", "perf library size=${videos.size} durations=${durations.size}")
         } finally {
@@ -86,6 +106,31 @@ class LibraryStore(context: Context) {
         persistState()
     }
 
+    fun markPlayed(video: LibraryVideo, positionMs: Long) {
+        markPlayed(video.id, positionMs)
+        video.fileKey()?.let { key ->
+            keyedProgress = keyedProgress + (key to positionMs)
+            persistKeyed()
+        }
+    }
+
+    fun startPosition(video: LibraryVideo, remoteMs: Long = 0L): Long {
+        val local = progress[video.id] ?: 0L
+        val keyed = video.fileKey()?.let { keyedProgress[it] } ?: 0L
+        return maxOf(local, keyed, remoteMs)
+    }
+
+    fun applyRemoteProgress(key: String, positionMs: Long) {
+        if (key.isBlank() || positionMs < 1_000L) return
+        val current = keyedProgress[key] ?: 0L
+        if (positionMs > current) {
+            keyedProgress = keyedProgress + (key to positionMs)
+            persistKeyed()
+        }
+    }
+
+    fun keyedProgressSnapshot(): Map<String, Long> = keyedProgress
+
     fun touch(video: LibraryVideo, positionMs: Long = 0L) {
         opened = (listOf(video) + opened.filterNot { sameOpened(it, video) }).take(24)
         recents = (listOf(video.id) + recents.filterNot { id ->
@@ -96,6 +141,21 @@ class LibraryStore(context: Context) {
         }
         persistState()
         persistOpened()
+    }
+
+    fun bindDownloadTitles(lookup: (String) -> String?) {
+        downloadTitleOf = lookup
+        applyDownloadTitles()
+    }
+
+    fun applyDownloadTitles() {
+        val current = videos
+        if (current.isEmpty()) return
+        val next = current.map { video ->
+            val titled = video.path?.let { downloadTitleOf(it) } ?: return@map video
+            if (video.title == titled) video else video.copy(title = titled)
+        }
+        if (next != current) videos = next
     }
 
     fun forget(id: String) {
@@ -282,7 +342,9 @@ class LibraryStore(context: Context) {
                     byPath = byPath,
                     video = LibraryVideo(
                         id = uri.toString(),
-                        title = name.substringBeforeLast('.'),
+                        title = path?.let { downloadTitleOf(it) }
+                            ?: path?.let { titleFromMeta(File(it).parentFile) }
+                            ?: name.substringBeforeLast('.'),
                         uri = uri,
                         durationMs = duration,
                         format = formatOf(name, if (mimeCol >= 0) cursor.getString(mimeCol) else null),
@@ -335,18 +397,24 @@ class LibraryStore(context: Context) {
                         val existingId = byPath.getValue(normalized)
                         val existing = into[existingId]
                         if (existing != null) {
-                            into[existingId] = existing.copy(source = sourceOf(path, null), path = existing.path ?: path)
+                            val titled = downloadTitleOf(path) ?: titleFromMeta(child.parentFile)
+                            into[existingId] = existing.copy(
+                                source = sourceOf(path, null),
+                                path = existing.path ?: path,
+                                title = titled ?: existing.title,
+                            )
                         }
                         return@forEach
                     }
                     val uri = Uri.fromFile(child)
                     val modified = child.lastModified()
+                    val pathTitle = downloadTitleOf(path) ?: titleFromMeta(child.parentFile)
                     putVideo(
                         into = into,
                         byPath = byPath,
                         video = LibraryVideo(
                             id = uri.toString(),
-                            title = child.nameWithoutExtension,
+                            title = pathTitle ?: child.nameWithoutExtension,
                             uri = uri,
                             durationMs = durationFor(uri, path, modified),
                             format = formatOf(child.name, null),
@@ -396,6 +464,15 @@ class LibraryStore(context: Context) {
             }
         }
         walk(root)
+    }
+
+    private fun titleFromMeta(dir: File?): String? {
+        if (dir == null) return null
+        val meta = File(dir, "meta.json")
+        if (!meta.exists()) return null
+        return runCatching {
+            org.json.JSONObject(meta.readText()).optString("title").ifBlank { null }
+        }.getOrNull()
     }
 
     private fun putVideo(

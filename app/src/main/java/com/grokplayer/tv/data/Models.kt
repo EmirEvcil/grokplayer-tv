@@ -9,6 +9,7 @@ enum class VideoSort {
     Oldest,
     Alphabetical,
     Newest,
+    Episode,
 }
 
 data class LibraryVideo(
@@ -36,6 +37,16 @@ data class LibraryVideo(
             source == StorageSource.Usb -> "USB"
             else -> "Dahili"
         }
+}
+
+fun mediaFileKey(name: String, size: Long): String = "${name.lowercase()}|$size"
+
+fun LibraryVideo.fileKey(): String? {
+    val file = path?.let { java.io.File(it) }?.takeIf { it.isFile }
+        ?: uri.path?.let { java.io.File(it) }?.takeIf { it.isFile }
+    if (file != null) return mediaFileKey(file.name, file.length())
+    val remote = originUrl?.ifBlank { null } ?: uri.takeIf { it.scheme == "http" || it.scheme == "https" }?.toString()
+    return remote?.substringBefore('?')?.lowercase()
 }
 
 internal fun sameOpened(a: LibraryVideo, b: LibraryVideo): Boolean {

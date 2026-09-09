@@ -65,7 +65,7 @@ data class RemoteState(
     }
 }
 
-data class RemoteHave(val key: String, val title: String)
+data class RemoteHave(val key: String, val title: String, val positionMs: Long = 0L)
 
 data class ResumeOffer(val title: String, val seconds: Double, val duration: Double)
 
@@ -74,15 +74,18 @@ data class LinkUi(
     val deviceName: String = "Emir’in TV",
     val pin: String? = null,
     val pinUntil: Long = 0L,
+    val pairingName: String? = null,
     val nearby: List<NearbyPc> = emptyList(),
     val paired: List<PairedPc> = emptyList(),
     val jobs: List<TransferJob> = emptyList(),
     val connectedId: String? = null,
+    val connectingId: String? = null,
     val remote: RemoteState? = null,
     val notice: String? = null,
 ) {
     fun isLive(id: String) = nearby.any { it.id == id }
     fun isConnected(id: String) = connectedId == id
+    fun isConnecting(id: String) = connectingId == id && connectedId != id
 }
 
 enum class SendMode { Copy, Stream }

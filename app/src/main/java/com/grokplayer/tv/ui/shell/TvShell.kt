@@ -74,9 +74,11 @@ import com.grokplayer.tv.ui.devices.DeviceHub
 import com.grokplayer.tv.ui.devices.DeviceOptions
 import com.grokplayer.tv.ui.devices.PairPinOverlay
 import com.grokplayer.tv.ui.devices.PcResumeOverlay
+import com.grokplayer.tv.ui.devices.RemoteFolderScreen
 import com.grokplayer.tv.ui.devices.SendToPcSheet
 import com.grokplayer.tv.ui.devices.TransferManager
 import com.grokplayer.tv.ui.devices.TransferOverlay
+import com.grokplayer.tv.ui.videos.FolderBrowser
 import com.grokplayer.tv.data.ThumbnailCache
 import com.grokplayer.tv.ui.Destination
 import com.grokplayer.tv.ui.player.PlayerScreen
@@ -116,9 +118,27 @@ fun TvShell() {
     val settings = remember { PlaybackSettings(context) }
     val streams = remember { StreamStore(context) }
     val downloads = remember { DownloadStore(context, settings) }
+    LaunchedEffect(downloads.items) {
+        library.bindDownloadTitles { path -> downloads.titleForPath(path) }
+    }
     val link = remember { LinkController(context) }
     val linkUi by link.ui.collectAsState()
+    LaunchedEffect(linkUi.remote?.have) {
+        linkUi.remote?.have?.forEach { item ->
+            if (item.positionMs >= 1_000L) library.applyRemoteProgress(item.key, item.positionMs)
+        }
+    }
+    LaunchedEffect(linkUi.connectedId) {
+        if (linkUi.connectedId == null) return@LaunchedEffect
+        while (true) {
+            link.pushProgress(library)
+            kotlinx.coroutines.delay(8_000)
+        }
+    }
     var hubPc by remember { mutableStateOf<PairedPc?>(null) }
+    var browsePc by remember { mutableStateOf<PairedPc?>(null) }
+    var shareFolders by remember { mutableStateOf(false) }
+    var grantPicker by remember { mutableStateOf(false) }
     var deviceMenuPc by remember { mutableStateOf<PairedPc?>(null) }
     var sendVideo by remember { mutableStateOf<LibraryVideo?>(null) }
     var transferTitle by remember { mutableStateOf<String?>(null) }
@@ -137,6 +157,7 @@ fun TvShell() {
     var focusStreamId by remember { mutableStateOf<String?>(null) }
     var focusHomeId by remember { mutableStateOf<String?>(null) }
     var focusSettingKey by remember { mutableStateOf<String?>(null) }
+    var focusDeviceId by remember { mutableStateOf<String?>(null) }
     val focusLock = remember { mutableStateOf(false) }
     val backHub = remember { BackHub() }
     val navFocus = remember { Destination.entries.associateWith { FocusRequester() } }
@@ -149,14 +170,12 @@ fun TvShell() {
         link.start()
         onDispose { link.stop() }
     }
-    LaunchedEffect(linkUi.connectedId) {
-        val id = linkUi.connectedId
-        if (id == null) {
-            link.watch(null)
-            return@LaunchedEffect
-        }
-        val pc = linkUi.paired.firstOrNull { it.id == id } ?: return@LaunchedEffect
-        link.watch(pc)
+    // connect()/dropSession() own the poll job. Restarting it here raced a
+    // cancelled poll into dropSession and killed a live link.
+
+    LaunchedEffect(linkUi.notice) {
+        val message = linkUi.notice ?: return@LaunchedEffect
+        notice = message
     }
 
     LaunchedEffect(Unit) {
@@ -234,7 +253,8 @@ fun TvShell() {
                 .background(GrokInk),
         ) {
             val playing = session
-            val modalOpen = deviceMenuPc != null || hubPc != null || searchOpen || transfersOpen
+            val modalOpen = deviceMenuPc != null || hubPc != null || searchOpen ||
+                transfersOpen || sendVideo != null || transferTitle != null
             Row(
                 Modifier
                     .fillMaxSize()
@@ -253,7 +273,9 @@ fun TvShell() {
                     onEnter = { dest ->
                         destination = dest
                         scope.launch {
-                            delay(40)
+                            delay(80)
+                            runCatching { pageFocus.getValue(dest).requestFocus() }
+                            delay(80)
                             runCatching { pageFocus.getValue(dest).requestFocus() }
                         }
                     },
@@ -342,6 +364,8 @@ fun TvShell() {
                                 onOpenTransfers = { transfersOpen = true },
                                 focusSettingKey = focusSettingKey,
                                 onFocusConsumed = { focusSettingKey = null },
+                                focusDeviceId = focusDeviceId,
+                                onDeviceFocusConsumed = { focusDeviceId = null },
                                 modifier = Modifier.fillMaxSize(),
                             )
                         }
@@ -403,7 +427,11 @@ fun TvShell() {
             }
             if (linkUi.visible) {
                 linkUi.pin?.let { pin ->
-                    PairPinOverlay(pin = pin, onCancel = { link.cancelPair() })
+                    PairPinOverlay(
+                        pin = pin,
+                        targetName = linkUi.pairingName,
+                        onCancel = { link.cancelPair() },
+                    )
                 }
             }
             LaunchedEffect(linkUi.paired, hubPc) {
@@ -464,29 +492,83 @@ fun TvShell() {
                     )
                 }
             }
+            browsePc?.let { pc ->
+                RemoteFolderScreen(
+                    link = link,
+                    pc = pc,
+                    onPlay = { queue, index ->
+                        resumePlayback = true
+                        session = PlaySession(queue, index)
+                    },
+                    onDownload = { videos ->
+                        videos.forEach { video ->
+                            val url = video.originUrl ?: video.uri.toString()
+                            downloads.enqueue(video.title, url)
+                        }
+                        notice = "${videos.size} video indirme kuyruğuna alındı"
+                    },
+                    onClose = { browsePc = null },
+                )
+            }
+            if (shareFolders) {
+                ShareFoldersOverlay(
+                    folders = link.sharedFolders.list(),
+                    onAdd = { grantPicker = true },
+                    onRemove = { link.sharedFolders.remove(it) },
+                    onClose = { shareFolders = false },
+                )
+            }
+            if (grantPicker) {
+                FolderBrowser(
+                    onPick = { dir ->
+                        link.sharedFolders.add(dir)
+                        grantPicker = false
+                    },
+                    onDismiss = { grantPicker = false },
+                )
+            }
             hubPc?.let { pc ->
-                DeviceHub(link = link, pc = pc, onClose = { hubPc = null })
+                DeviceHub(
+                    link = link,
+                    pc = pc,
+                    onBrowsePc = { browsePc = pc },
+                    onShareFolders = { shareFolders = true },
+                    onClose = {
+                        focusDeviceId = pc.id
+                        hubPc = null
+                    },
+                )
             }
             deviceMenuPc?.let { pc ->
                 val connected = linkUi.isConnected(pc.id)
                 DeviceOptions(
                     pc = pc,
                     connected = connected,
+                    onConnect = {
+                        focusDeviceId = pc.id
+                        deviceMenuPc = null
+                        link.connect(pc)
+                    },
                     onManage = {
                         deviceMenuPc = null
                         hubPc = pc
                     },
                     onDisconnect = {
+                        focusDeviceId = pc.id
                         link.disconnect(pc.id)
                         deviceMenuPc = null
                         hubPc = null
                     },
-                    onRemove = {
+                    onForget = {
+                        focusDeviceId = pc.id
                         link.forget(pc.id)
                         deviceMenuPc = null
                         hubPc = null
                     },
-                    onDismiss = { deviceMenuPc = null },
+                    onDismiss = {
+                        focusDeviceId = pc.id
+                        deviceMenuPc = null
+                    },
                 )
             }
             notice?.let { message ->
@@ -631,6 +713,70 @@ private fun NavRow(
 }
 
 @Composable
+private fun ShareFoldersOverlay(
+    folders: List<String>,
+    onAdd: () -> Unit,
+    onRemove: (String) -> Unit,
+    onClose: () -> Unit,
+) {
+    val first = remember { FocusRequester() }
+    var tick by remember { mutableStateOf(0) }
+    val shown = remember(tick, folders) { folders }
+    com.grokplayer.tv.ui.theme.RememberFocusLock()
+    com.grokplayer.tv.ui.theme.InterceptBack { onClose(); true }
+    androidx.activity.compose.BackHandler { onClose() }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(GrokInk)
+            .padding(28.dp),
+    ) {
+        Column {
+            Text("Paylaşılan TV klasörleri", style = GrokType.pageTitle, color = GrokWhite)
+            Text(
+                "PC yalnızca burada izin verdiğin klasörleri görür.",
+                style = GrokType.heroMeta,
+                color = GrokMuted,
+                modifier = Modifier.padding(top = 4.dp, bottom = 16.dp),
+            )
+            com.grokplayer.tv.ui.components.OutlineButton(
+                label = "Klasör ekle",
+                onClick = onAdd,
+                modifier = Modifier.focusRequester(first),
+            )
+            Spacer(Modifier.height(12.dp))
+            if (shown.isEmpty()) {
+                Text("Henüz klasör yok.", style = GrokType.cardMeta, color = GrokMuted)
+            } else {
+                shown.forEach { path ->
+                    com.grokplayer.tv.ui.components.FocusableAction(
+                        onClick = {
+                            onRemove(path)
+                            tick++
+                        },
+                    ) { focused ->
+                        Text(
+                            path,
+                            style = GrokType.cardTitle,
+                            color = if (focused) GrokInk else GrokWhite,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    if (focused) GrokYellow else com.grokplayer.tv.ui.theme.GrokSurface,
+                                    RoundedCornerShape(8.dp),
+                                )
+                                .padding(12.dp),
+                        )
+                    }
+                    Text("Tamam · kaldır", style = GrokType.cardMeta, color = GrokMuted, modifier = Modifier.padding(bottom = 8.dp))
+                }
+            }
+        }
+    }
+    LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
+}
+
+@Composable
 private fun TopChrome(
     onSearch: () -> Unit,
     downFocus: FocusRequester,
@@ -646,8 +792,14 @@ private fun TopChrome(
     val interaction = remember { MutableInteractionSource() }
     val focused = interaction.collectIsFocusedAsState().value
 
+    val lock = LocalFocusLock.current
     Row(
-        modifier = modifier,
+        modifier = modifier.focusProperties {
+            if (lock.value) {
+                canFocus = false
+                onEnter = { FocusRequester.Cancel }
+            }
+        },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -658,7 +810,13 @@ private fun TopChrome(
             modifier = Modifier
                 .size(22.dp)
                 .clip(CircleShape)
-                .focusProperties { down = downFocus }
+                .focusProperties {
+                    down = downFocus
+                    if (lock.value) {
+                        canFocus = false
+                        onEnter = { FocusRequester.Cancel }
+                    }
+                }
                 .clickable(
                     interactionSource = interaction,
                     indication = null,

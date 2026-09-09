@@ -9,6 +9,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackGroup
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import com.grokplayer.tv.data.DownloadOwnership
 import com.grokplayer.tv.data.LibraryVideo
 import java.io.File
 import java.util.Locale
@@ -30,26 +31,16 @@ internal data class SubtitleOption(
 
 internal fun sidecarSubtitleConfigs(video: LibraryVideo): List<MediaItem.SubtitleConfiguration> {
     val videoFile = resolveVideoFile(video) ?: return emptyList()
-    val parent = videoFile.parentFile ?: return emptyList()
     val stem = videoFile.nameWithoutExtension
-    val found = LinkedHashMap<String, File>()
-    for (suffix in SIDECAR_SUFFIXES) {
-        for (ext in SUBTITLE_EXTENSIONS) {
-            val file = File(parent, "$stem$suffix.$ext")
-            if (file.isFile) found.putIfAbsent(file.absolutePath.lowercase(Locale.US), file)
-        }
+    return DownloadOwnership.sidecarsBeside(videoFile, subtitlesOnly = true).map { file ->
+        val lang = DownloadOwnership.sidecarLanguage(stem, file)
+        MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(file))
+            .setMimeType(mimeForSubtitle(file.extension))
+            .setLanguage(lang)
+            .setLabel(sidecarLabel(file, lang))
+            .setSelectionFlags(0)
+            .build()
     }
-    return found.values
-        .sortedBy { it.name.lowercase(Locale.US) }
-        .map { file ->
-            val lang = languageFromSidecar(stem, file)
-            MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(file))
-                .setMimeType(mimeForSubtitle(file.extension))
-                .setLanguage(lang)
-                .setLabel(sidecarLabel(file, lang))
-                .setSelectionFlags(0)
-                .build()
-        }
 }
 
 internal fun listSubtitleOptions(tracks: Tracks): List<SubtitleOption> {
@@ -130,25 +121,6 @@ private fun resolveVideoFile(video: LibraryVideo): File? {
     return null
 }
 
-private fun isSidecarFor(stem: String, file: File): Boolean {
-    val ext = file.extension.lowercase(Locale.US)
-    if (ext !in SUBTITLE_EXTENSIONS) return false
-    val name = file.nameWithoutExtension
-    if (name.equals(stem, ignoreCase = true)) return true
-    return name.startsWith("$stem.", ignoreCase = true) ||
-        name.startsWith("$stem-", ignoreCase = true) ||
-        name.startsWith("${stem}_", ignoreCase = true)
-}
-
-private fun languageFromSidecar(stem: String, file: File): String? {
-    val rest = file.nameWithoutExtension
-        .removePrefix(stem)
-        .trim('.', '-', '_')
-        .lowercase(Locale.US)
-    if (rest.isBlank()) return null
-    return LANGUAGE_NAMES[rest]?.let { rest.take(2) } ?: rest.take(3)
-}
-
 private fun sidecarLabel(file: File, language: String?): String {
     languageLabel(language)?.let { return it }
     return "Dosya · ${file.extension.uppercase(Locale.US)}"
@@ -185,12 +157,6 @@ private fun mimeForSubtitle(extension: String): String {
         else -> MimeTypes.APPLICATION_SUBRIP
     }
 }
-
-private val SUBTITLE_EXTENSIONS = setOf("srt", "vtt", "webvtt", "ass", "ssa")
-
-private val SIDECAR_SUFFIXES = listOf(
-    "", ".tr", ".tur", ".en", ".eng", ".fr", ".fra", ".es", ".spa", ".ja", ".jpn",
-)
 
 private val LANGUAGE_NAMES = mapOf(
     "tr" to "Türkçe",

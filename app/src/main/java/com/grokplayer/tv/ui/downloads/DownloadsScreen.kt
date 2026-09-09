@@ -3,9 +3,6 @@ package com.grokplayer.tv.ui.downloads
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,12 +21,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.grokplayer.tv.R
@@ -38,7 +37,6 @@ import com.grokplayer.tv.data.DownloadStatus
 import com.grokplayer.tv.data.DownloadStore
 import com.grokplayer.tv.data.LibraryVideo
 import com.grokplayer.tv.ui.components.EmptyState
-import com.grokplayer.tv.ui.theme.GrokInk
 import com.grokplayer.tv.ui.theme.GrokMuted
 import com.grokplayer.tv.ui.theme.GrokPink
 import com.grokplayer.tv.ui.theme.GrokSoft
@@ -59,22 +57,53 @@ fun DownloadsScreen(
     modifier: Modifier = Modifier,
 ) {
     var optionsFor by remember { mutableStateOf<DownloadItem?>(null) }
-    val rowFocus = remember(downloads.items.size) {
-        List(downloads.items.size.coerceAtLeast(1)) { FocusRequester() }
+    var lastFocusedId by rememberSaveable { mutableStateOf<String?>(null) }
+    var restoreAfterModal by remember { mutableStateOf(false) }
+    val rowFocus = remember { mutableMapOf<String, FocusRequester>() }
+    fun requester(id: String) = rowFocus.getOrPut(id) { FocusRequester() }
+    fun closeOptions() {
+        optionsFor = null
+        restoreAfterModal = true
     }
     fun dismiss(): Boolean {
         if (optionsFor == null) return false
-        optionsFor = null
+        closeOptions()
         return true
     }
     InterceptBack(enabled = optionsFor != null) { dismiss() }
     BackHandler(enabled = optionsFor != null) { dismiss() }
+    LaunchedEffect(restoreAfterModal, downloads.items.map { it.id }) {
+        if (!restoreAfterModal) return@LaunchedEffect
+        kotlinx.coroutines.delay(40)
+        val items = downloads.items
+        val target = items.firstOrNull { it.id == lastFocusedId } ?: items.firstOrNull()
+        lastFocusedId = target?.id
+        repeat(6) {
+            val ok = if (target != null) {
+                runCatching { requester(target.id).requestFocus() }.getOrDefault(false)
+            } else {
+                runCatching { firstFocus.requestFocus() }.getOrDefault(false)
+            }
+            if (ok) {
+                restoreAfterModal = false
+                return@LaunchedEffect
+            }
+            kotlinx.coroutines.delay(40)
+        }
+        restoreAfterModal = false
+    }
 
     Box(modifier.fillMaxSize()) {
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(start = 28.dp, end = 28.dp, top = 18.dp, bottom = 10.dp),
+                .padding(start = 28.dp, end = 28.dp, top = 18.dp, bottom = 10.dp)
+                .focusProperties {
+                    if (optionsFor != null) {
+                        canFocus = false
+                        onEnter = { FocusRequester.Cancel }
+                    }
+                },
         ) {
             Text(stringResource(R.string.nav_downloads), style = GrokType.pageTitle, color = GrokWhite)
             Text(
@@ -90,19 +119,30 @@ fun DownloadsScreen(
                     modifier = Modifier.focusRequester(firstFocus),
                 )
             } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    itemsIndexed(downloads.items, key = { _, item -> item.id }) { index, item ->
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                ) {
+                    itemsIndexed(downloads.items, key = { index, item -> "${item.id}#$index" }) { _, item ->
+                        val restoreId = lastFocusedId ?: downloads.items.firstOrNull()?.id
                         DownloadRow(
                             item = item,
                             modifier = Modifier
-                                .then(if (index == 0) Modifier.focusRequester(firstFocus) else Modifier)
-                                .focusRequester(rowFocus[index])
+                                .then(
+                                    if (item.id == restoreId) Modifier.focusRequester(firstFocus) else Modifier,
+                                )
+                                .focusRequester(requester(item.id))
+                                .onFocusChanged { if (it.isFocused) lastFocusedId = item.id }
                                 .focusProperties { left = railFocus },
                             onClick = {
-                                if (item.status == DownloadStatus.Done) {
-                                    val queue = downloads.items.filter { it.status == DownloadStatus.Done }.map { it.toVideo() }
-                                    val playIndex = queue.indexOfFirst { it.id == item.toVideo().id }.coerceAtLeast(0)
-                                    onPlay(queue, playIndex)
+                                when (item.status) {
+                                    DownloadStatus.Done -> {
+                                        val queue = downloads.items.filter { it.status == DownloadStatus.Done }.map { it.toVideo() }
+                                        val playIndex = queue.indexOfFirst { it.id == item.toVideo().id }.coerceAtLeast(0)
+                                        onPlay(queue, playIndex)
+                                    }
+                                    DownloadStatus.Failed -> downloads.enqueue(item.title, item.url)
+                                    else -> Unit
                                 }
                             },
                             onLongClick = { optionsFor = item },
@@ -115,21 +155,28 @@ fun DownloadsScreen(
             DownloadOptions(
                 item = item,
                 onPlay = {
-                    optionsFor = null
+                    closeOptions()
                     if (item.status == DownloadStatus.Done) {
                         onPlay(listOf(item.toVideo()), 0)
                     }
                 },
+                onRetry = {
+                    downloads.enqueue(item.title, item.url)
+                    closeOptions()
+                },
                 onCancel = {
                     downloads.cancel(item.id)
-                    optionsFor = null
+                    closeOptions()
                 },
                 onDelete = {
+                    val list = downloads.items
+                    val idx = list.indexOfFirst { it.id == item.id }
+                    lastFocusedId = list.getOrNull(idx + 1)?.id ?: list.getOrNull(idx - 1)?.id
                     downloads.remove(item.id)
                     onRemoved(item)
-                    optionsFor = null
+                    closeOptions()
                 },
-                onDismiss = { optionsFor = null },
+                onDismiss = { closeOptions() },
             )
         }
     }
@@ -186,57 +233,29 @@ private fun DownloadRow(
 private fun DownloadOptions(
     item: DownloadItem,
     onPlay: () -> Unit,
+    onRetry: () -> Unit,
     onCancel: () -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    RememberFocusLock()
-    InterceptBack { onDismiss(); true }
-    val first = remember { FocusRequester() }
-    BackHandler(onBack = onDismiss)
-    com.grokplayer.tv.ui.components.AbsorbOpeningOk {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(GrokInk.copy(alpha = 0.55f))
-                .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) { onDismiss() },
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(
-                Modifier
-                    .width(320.dp)
-                    .background(GrokSurface, RoundedCornerShape(12.dp))
-                    .padding(16.dp),
-            ) {
-                Text(item.title, style = GrokType.section, color = GrokWhite)
-                Text(statusLabel(item), style = GrokType.cardMeta, color = GrokSoft, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
-                if (item.status == DownloadStatus.Done) {
-                    OptionLine("Oynat", onPlay, Modifier.focusRequester(first))
-                }
-                if (item.status == DownloadStatus.Running || item.status == DownloadStatus.Queued) {
-                    OptionLine("İptal et", onCancel, Modifier.focusRequester(first))
-                }
-                OptionLine("Sil", onDelete, if (item.status == DownloadStatus.Failed) Modifier.focusRequester(first) else Modifier)
-                OptionLine(stringResource(R.string.close), onDismiss)
+    com.grokplayer.tv.ui.components.ModalMenu(
+        title = item.title,
+        meta = statusLabel(item),
+        onDismiss = onDismiss,
+        width = 320.dp,
+        actions = buildList {
+            if (item.status == DownloadStatus.Done) {
+                add(com.grokplayer.tv.ui.components.ModalAction("Oynat", onPlay))
             }
-        }
-    }
-    LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
-}
-
-@Composable
-private fun OptionLine(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val interaction = remember { MutableInteractionSource() }
-    val focused = interaction.collectIsFocusedAsState().value
-    Text(
-        text = label,
-        style = GrokType.button,
-        color = if (focused) GrokInk else GrokWhite,
-        modifier = modifier
-            .fillMaxWidth()
-            .background(if (focused) GrokYellow else androidx.compose.ui.graphics.Color.Transparent, RoundedCornerShape(6.dp))
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            if (item.status == DownloadStatus.Failed) {
+                add(com.grokplayer.tv.ui.components.ModalAction("Tekrar dene", onRetry))
+            }
+            if (item.status == DownloadStatus.Running || item.status == DownloadStatus.Queued) {
+                add(com.grokplayer.tv.ui.components.ModalAction("İptal et", onCancel))
+            }
+            add(com.grokplayer.tv.ui.components.ModalAction("Sil", onDelete))
+            add(com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.close), onDismiss))
+        },
     )
 }
 

@@ -5,15 +5,18 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,16 +36,20 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
@@ -61,7 +68,9 @@ import com.grokplayer.tv.ui.components.OutlineButton
 import com.grokplayer.tv.ui.components.VideoPoster
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
+import android.content.Context
 import android.net.Uri
+import android.view.inputmethod.InputMethodManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -103,6 +112,7 @@ fun StreamsScreen(
     val gridState = rememberLazyGridState()
     var savedScrollIndex by remember { mutableStateOf(0) }
     var savedScrollOffset by remember { mutableStateOf(0) }
+    var lastFocusedIndex by rememberSaveable { mutableIntStateOf(0) }
     val tileFocus = remember(streams.items.size) { List(streams.items.size.coerceAtLeast(1)) { FocusRequester() } }
 
     fun dismissOverlay(): Boolean {
@@ -133,7 +143,8 @@ fun StreamsScreen(
 
     LaunchedEffect(focusStreamId, visible) {
         val id = focusStreamId ?: return@LaunchedEffect
-        val index = visible.indexOfFirst { it.id == id }
+        val bare = id.removePrefix("stream:")
+        val index = visible.indexOfFirst { it.id == id || it.id == bare }
         if (index >= 0) {
             gridState.scrollToItem(savedScrollIndex, savedScrollOffset)
             kotlinx.coroutines.delay(32)
@@ -151,7 +162,13 @@ fun StreamsScreen(
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(start = 28.dp, end = 28.dp, top = 18.dp, bottom = 10.dp),
+                .padding(start = 28.dp, end = 28.dp, top = 18.dp, bottom = 10.dp)
+                .focusProperties {
+                    if (optionsFor != null || addOpen) {
+                        canFocus = false
+                        onEnter = { FocusRequester.Cancel }
+                    }
+                },
         ) {
             Row(
                 Modifier
@@ -254,19 +271,24 @@ fun StreamsScreen(
                     modifier = Modifier.weight(1f),
                 ) {
                     itemsIndexed(visible, key = { _, item -> item.id }) { index, item ->
+                        val restoreIndex = lastFocusedIndex.coerceIn(0, visible.lastIndex)
                         StreamTile(
                             item = item,
                             modifier = Modifier
                                 .then(
-                                    if (index == 0) {
-                                        Modifier.focusRequester(firstFocus).focusRequester(firstTile)
+                                    if (index == restoreIndex) {
+                                        Modifier.focusRequester(firstFocus)
                                     } else {
-                                        Modifier.focusRequester(tileFocus[index.coerceAtMost(tileFocus.lastIndex)])
+                                        Modifier
                                     },
                                 )
+                                .focusRequester(
+                                    if (index == 0) firstTile else tileFocus[index.coerceAtMost(tileFocus.lastIndex)],
+                                )
+                                .onFocusChanged { if (it.isFocused) lastFocusedIndex = index }
                                 .focusProperties {
                                     left = if (index % 3 == 0) railFocus else FocusRequester.Default
-                                    up = filterFocus[0]
+                                    up = if (index < 3) filterFocus[0] else FocusRequester.Default
                                 },
                             onClick = {
                                 savedScrollIndex = gridState.firstVisibleItemIndex
@@ -403,18 +425,44 @@ private fun StreamTile(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AddStreamDialog(
     onSave: (String, String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     RememberFocusLock()
-    InterceptBack { onDismiss(); true }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val view = LocalView.current
+    val context = LocalContext.current
+    val imeVisible = WindowInsets.isImeVisible
+    var imeWasOpen by remember { mutableStateOf(true) }
+    var hideImeOnce by remember { mutableStateOf(false) }
+    LaunchedEffect(imeVisible) {
+        if (imeVisible) {
+            imeWasOpen = true
+            hideImeOnce = false
+        }
+    }
+    fun closeImeOrDismiss() {
+        if (!hideImeOnce && (imeVisible || imeWasOpen)) {
+            keyboard?.hide()
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.hideSoftInputFromWindow(view.windowToken, 0)
+            hideImeOnce = true
+            imeWasOpen = false
+            return
+        }
+        onDismiss()
+    }
+    InterceptBack { closeImeOrDismiss(); true }
     var title by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
-    val first = remember { FocusRequester() }
-    BackHandler(onBack = onDismiss)
+    val nameFocus = remember { FocusRequester() }
+    val urlFocus = remember { FocusRequester() }
+    val saveFocus = remember { FocusRequester() }
+    BackHandler(onBack = { closeImeOrDismiss() })
     Box(
         Modifier
             .fillMaxSize()
@@ -429,8 +477,38 @@ private fun AddStreamDialog(
                 .padding(18.dp),
         ) {
             Text(stringResource(R.string.add_stream), style = GrokType.section, color = GrokWhite)
-            DialogField(stringResource(R.string.stream_name), title, { title = it }, Modifier.focusRequester(first).padding(top = 12.dp))
-            DialogField(stringResource(R.string.stream_url), url, { url = it }, Modifier.padding(top = 8.dp))
+            DialogField(
+                stringResource(R.string.stream_name),
+                title,
+                { title = it },
+                Modifier.padding(top = 12.dp),
+                fieldModifier = Modifier
+                    .focusRequester(nameFocus)
+                    .focusProperties {
+                        up = nameFocus
+                        down = urlFocus
+                    },
+                onFocused = {
+                    imeWasOpen = true
+                    hideImeOnce = false
+                },
+            )
+            DialogField(
+                stringResource(R.string.stream_url),
+                url,
+                { url = it },
+                Modifier.padding(top = 8.dp),
+                fieldModifier = Modifier
+                    .focusRequester(urlFocus)
+                    .focusProperties {
+                        up = nameFocus
+                        down = saveFocus
+                    },
+                onFocused = {
+                    imeWasOpen = true
+                    hideImeOnce = false
+                },
+            )
             error?.let {
                 Text(it, style = GrokType.cardMeta, color = GrokPink, modifier = Modifier.padding(top = 8.dp))
             }
@@ -444,15 +522,30 @@ private fun AddStreamDialog(
                         onSave(title, clean)
                     }
                 },
-                modifier = Modifier.padding(top = 14.dp),
+                modifier = Modifier
+                    .padding(top = 14.dp)
+                    .focusRequester(saveFocus)
+                    .focusProperties { up = urlFocus },
             )
         }
     }
-    LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
+    LaunchedEffect(Unit) {
+        repeat(8) {
+            kotlinx.coroutines.delay(40)
+            runCatching { nameFocus.requestFocus() }
+        }
+    }
 }
 
 @Composable
-private fun DialogField(label: String, value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
+private fun DialogField(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    fieldModifier: Modifier = Modifier,
+    onFocused: () -> Unit = {},
+) {
     Column(modifier.fillMaxWidth()) {
         Text(label, style = GrokType.cardMeta, color = GrokMuted)
         BasicTextField(
@@ -465,7 +558,9 @@ private fun DialogField(label: String, value: String, onChange: (String) -> Unit
                 .padding(top = 4.dp)
                 .fillMaxWidth()
                 .background(GrokInk, RoundedCornerShape(8.dp))
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .then(fieldModifier)
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .onFocusChanged { if (it.isFocused) onFocused() },
         )
     }
 }
@@ -482,30 +577,13 @@ private fun StreamOptions(
     onDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    RememberFocusLock()
-    InterceptBack { onDismiss(); true }
-    val first = remember { FocusRequester() }
-    BackHandler(onBack = onDismiss)
-    com.grokplayer.tv.ui.components.AbsorbOpeningOk {
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(GrokInk.copy(alpha = 0.55f))
-            .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) { onDismiss() },
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            Modifier
-                .width(320.dp)
-                .background(GrokSurface, RoundedCornerShape(12.dp))
-                .padding(16.dp)
-                .focusProperties { left = FocusRequester.Cancel; right = FocusRequester.Cancel },
-        ) {
-            Text(item.title, style = GrokType.section, color = GrokWhite)
-            OptionLine(stringResource(R.string.resume), onPlay, Modifier.focusRequester(first))
-            if (canSend) {
-                OptionLine("PC’ye gönder", onSend)
-            }
+    com.grokplayer.tv.ui.components.ModalMenu(
+        title = item.title,
+        onDismiss = onDismiss,
+        width = 320.dp,
+        actions = buildList {
+            add(com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.resume), onPlay))
+            if (canSend) add(com.grokplayer.tv.ui.components.ModalAction("PC’ye gönder", onSend))
             if (item.kind == StreamKind.Vod) {
                 val label = when (downloadStatus) {
                     com.grokplayer.tv.data.DownloadStatus.Queued,
@@ -514,29 +592,11 @@ private fun StreamOptions(
                     com.grokplayer.tv.data.DownloadStatus.Done -> "İndirildi"
                     else -> stringResource(R.string.download)
                 }
-                OptionLine(label, onDownload)
+                add(com.grokplayer.tv.ui.components.ModalAction(label, onDownload))
             }
-            OptionLine(if (item.favorite) "Favorilerden çıkar" else "Favorilere ekle", onFavorite)
-            OptionLine("Sil", onDelete)
-            OptionLine(stringResource(R.string.close), onDismiss)
-        }
-    }
-    }
-    LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
-}
-
-@Composable
-private fun OptionLine(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val interaction = remember { MutableInteractionSource() }
-    val focused = interaction.collectIsFocusedAsState().value
-    Text(
-        text = label,
-        style = GrokType.button,
-        color = if (focused) GrokInk else GrokWhite,
-        modifier = modifier
-            .fillMaxWidth()
-            .background(if (focused) GrokYellow else Color.Transparent, RoundedCornerShape(6.dp))
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            add(com.grokplayer.tv.ui.components.ModalAction(if (item.favorite) "Favorilerden çıkar" else "Favorilere ekle", onFavorite))
+            add(com.grokplayer.tv.ui.components.ModalAction("Sil", onDelete))
+            add(com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.close), onDismiss))
+        },
     )
 }

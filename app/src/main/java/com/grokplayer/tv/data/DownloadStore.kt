@@ -8,7 +8,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.io.File
 import java.io.FileOutputStream
-import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
@@ -67,8 +66,16 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
         private set
 
     init {
-        items = load().map { item ->
-            if (item.status == DownloadStatus.Running) item.copy(status = DownloadStatus.Queued) else item
+        items = dedupeDownloads(load()).map { item ->
+            val progress = item.progress.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
+            when {
+                item.status == DownloadStatus.Running -> item.copy(status = DownloadStatus.Queued, progress = 0f)
+                item.status == DownloadStatus.Done && item.localPath?.let { File(it).exists() } != true ->
+                    item.copy(status = DownloadStatus.Failed, progress = 0f, localPath = null, error = "Dosya bulunamadı")
+                item.status == DownloadStatus.Failed && isCertError(item.error) ->
+                    item.copy(status = DownloadStatus.Queued, progress = 0f, error = null)
+                else -> item.copy(progress = progress)
+            }
         }
         persist()
         pump(settings.downloadHeight)
@@ -83,6 +90,9 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
         }
         if (existing?.status == DownloadStatus.Done && existing.localPath?.let { File(it).exists() } == true) {
             return existing.id
+        }
+        if (existing != null && existing.status != DownloadStatus.Done) {
+            purgePartial(existing)
         }
         val item = DownloadItem(
             id = UUID.randomUUID().toString(),
@@ -102,9 +112,13 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
 
     fun cancel(id: String) {
         cancelled += id
+        val item = items.firstOrNull { it.id == id }
+        if (item != null && item.status != DownloadStatus.Done) {
+            purgePartial(item)
+        }
         items = items.map {
             if (it.id == id && it.status != DownloadStatus.Done) {
-                it.copy(status = DownloadStatus.Failed, error = "İptal edildi")
+                it.copy(status = DownloadStatus.Failed, error = "İptal edildi", localPath = null)
             } else {
                 it
             }
@@ -115,16 +129,13 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
     fun remove(id: String) {
         cancelled += id
         val item = items.firstOrNull { it.id == id }
-        item?.localPath?.let { path ->
-            val file = File(path)
-            file.delete()
-            file.parentFile?.listFiles()
-                ?.filter { it.nameWithoutExtension == file.nameWithoutExtension && it != file }
-                ?.forEach { it.delete() }
-        }
+        if (item != null) purgePartial(item)
         items = items.filterNot { it.id == id }
         persist()
     }
+
+    fun titleForPath(path: String): String? =
+        items.firstOrNull { it.localPath == path }?.title
 
     private fun pump(maxHeight: Int) {
         if (job?.isActive == true) return
@@ -133,24 +144,49 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
     }
 
     private suspend fun runItem(item: DownloadItem, maxHeight: Int) {
+        if (item.id in cancelled) {
+            job = null
+            pump(maxHeight)
+            return
+        }
         withContext(Dispatchers.Main) {
+            if (item.id in cancelled) return@withContext
             items = items.map {
-                if (it.id == item.id) it.copy(status = DownloadStatus.Running, progress = 0f, error = null) else it
+                if (it.id == item.id && it.status == DownloadStatus.Queued) {
+                    it.copy(status = DownloadStatus.Running, progress = 0f, error = null)
+                } else {
+                    it
+                }
             }
         }
-        val stem = safeName(item.title)
-        val dest = File(DownloadPaths.dir(app), "$stem.ts")
+        if (item.id in cancelled) {
+            job = null
+            pump(maxHeight)
+            return
+        }
+        val dest = destFile(item, "ts")
         val cap = if (maxHeight <= 0) Int.MAX_VALUE else maxHeight
+        var lastEmitAt = 0L
+        var lastShown = -1f
         val result = runCatching {
+            StreamHttp.client(app)
             VodDownloader.download(
                 url = item.url,
                 dest = dest,
                 maxHeight = cap,
                 cancelled = { item.id in cancelled },
                 onProgress = { value ->
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (value < 1f && value - lastShown < 0.005f && now - lastEmitAt < 150L) return@download
+                    lastShown = value
+                    lastEmitAt = now
                     scope.launch(Dispatchers.Main.immediate) {
                         items = items.map { current ->
-                            if (current.id == item.id) current.copy(progress = value) else current
+                            if (current.id == item.id && current.status == DownloadStatus.Running) {
+                                current.copy(progress = value)
+                            } else {
+                                current
+                            }
                         }
                     }
                 },
@@ -158,10 +194,19 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
         }
         withContext(Dispatchers.Main) {
             val file = result.getOrNull()
+            val aborted = item.id in cancelled || isCancel(result.exceptionOrNull())
             items = items.map { current ->
                 if (current.id != item.id) {
                     current
+                } else if (aborted) {
+                    purgePartial(item, dest, file)
+                    current.copy(
+                        status = DownloadStatus.Failed,
+                        error = "İptal edildi",
+                        localPath = null,
+                    )
                 } else if (file != null && file.exists() && file.length() > 0L) {
+                    writeMeta(item, file)
                     current.copy(
                         status = DownloadStatus.Done,
                         progress = 1f,
@@ -169,17 +214,18 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
                         error = null,
                     )
                 } else {
-                    dest.delete()
+                    purgePartial(item, dest, file)
                     current.copy(
                         status = DownloadStatus.Failed,
-                        error = result.exceptionOrNull()?.message ?: "İndirilemedi",
+                        error = friendlyError(result.exceptionOrNull()),
+                        localPath = null,
                     )
                 }
             }
             persist()
         }
         job = null
-        if (item.id !in cancelled) pump(maxHeight)
+        pump(maxHeight)
     }
 
     private fun persist() {
@@ -225,11 +271,74 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
         }.getOrDefault(emptyList())
     }
 
-    private fun safeName(title: String): String {
-        val cleaned = title.replace(Regex("[^A-Za-z0-9._-]+"), "_").trim('_')
-        return cleaned.ifBlank { "vod" }.take(48)
+    private fun isCertError(error: String?): Boolean {
+        val text = error.orEmpty()
+        return text.contains("Trust anchor", ignoreCase = true) ||
+            text.contains("CertPath", ignoreCase = true) ||
+            text.contains("SSLHandshake", ignoreCase = true)
+    }
+
+    private fun isCancel(error: Throwable?): Boolean {
+        val text = error?.message.orEmpty()
+        return text.contains("İptal edildi") || error is java.util.concurrent.CancellationException
+    }
+
+    private fun friendlyError(error: Throwable?): String {
+        val text = error?.message.orEmpty()
+        return when {
+            isCancel(error) -> "İptal edildi"
+            isCertError(text) -> "Bağlantı kurulamadı"
+            else -> text.ifBlank { "İndirilemedi" }
+        }
+    }
+
+    private fun purgePartial(item: DownloadItem, vararg extras: File?) {
+        val root = DownloadPaths.dir(app)
+        val keep = DownloadOwnership.keepPaths(
+            root,
+            items.filter { it.id != item.id }.map { it.ref() },
+        )
+        DownloadOwnership.purge(
+            root = root,
+            item = item.ref(),
+            extras = extras.filterNotNull(),
+            keep = keep,
+        )
+    }
+
+    private fun writeMeta(item: DownloadItem, videoFile: File) {
+        val parent = videoFile.parentFile ?: return
+        parent.mkdirs()
+        File(parent, "meta.json").writeText(
+            JSONObject()
+                .put("id", item.id)
+                .put("title", item.title)
+                .put("url", item.url)
+                .toString(),
+        )
+    }
+
+    private fun destFile(item: DownloadItem, ext: String): File {
+        val dest = DownloadOwnership.dest(DownloadPaths.dir(app), item.id, item.title, ext)
+        dest.parentFile?.mkdirs()
+        return dest
+    }
+
+    private fun DownloadItem.ref() = DownloadOwnership.ItemRef(id, title, localPath)
+}
+
+internal fun dedupeDownloads(list: List<DownloadItem>): List<DownloadItem> {
+    val seen = HashSet<String>()
+    return list.filter { item ->
+        val id = item.id.ifBlank { return@filter false }
+        seen.add(id)
     }
 }
+
+internal fun downloadFileName(title: String): String = DownloadOwnership.fileName(title)
+
+internal fun downloadStem(title: String, id: String): String =
+    DownloadOwnership.legacyDest(File("."), id, title, "x").nameWithoutExtension
 
 internal object VodDownloader {
     fun download(
@@ -243,9 +352,14 @@ internal object VodDownloader {
         if ((dest.parentFile?.usableSpace ?: 0L) < 80L * 1024L * 1024L) {
             error("Yetersiz boş alan")
         }
-        val resolved = StreamProbe.resolveFinalUrl(url)
+        val resolved = StreamProbe.playUrl(url)
+        if (!looksLikePlaylist(resolved)) {
+            val mp4 = File(dest.parentFile, dest.nameWithoutExtension + ".mp4")
+            downloadProgressive(resolved, mp4, cancelled, onProgress)
+            return mp4
+        }
         val head = fetchText(resolved)
-        if (head == null || (!head.contains("#EXTM3U") && !looksLikePlaylist(resolved))) {
+        if (head == null || !head.contains("#EXTM3U")) {
             val mp4 = File(dest.parentFile, dest.nameWithoutExtension + ".mp4")
             downloadProgressive(resolved, mp4, cancelled, onProgress)
             return mp4
@@ -265,32 +379,60 @@ internal object VodDownloader {
             return mp4
         }
         val unique = segments.distinct()
+        val hasSubs = subtitleEntries(head).isNotEmpty()
+        val videoShare = if (hasSubs) 0.97f else 1f
         if (unique.size == 1) {
-            downloadProgressive(resolve(mediaUrl, unique.first()), dest, cancelled, onProgress)
+            downloadProgressive(resolve(mediaUrl, unique.first()), dest, cancelled) { value ->
+                onProgress(value * videoShare)
+            }
         } else {
-            FileOutputStream(dest).use { out ->
-                unique.forEachIndexed { index, ref ->
-                    if (cancelled()) error("İptal edildi")
-                    httpCopy(resolve(mediaUrl, ref), out)
-                    onProgress((index + 1).toFloat() / unique.size)
+            try {
+                FileOutputStream(dest).use { out ->
+                    unique.forEachIndexed { index, ref ->
+                        if (cancelled()) error("İptal edildi")
+                        val base = index.toFloat() / unique.size
+                        val slice = 1f / unique.size
+                        StreamHttp.copyTo(resolve(mediaUrl, ref), out, cancelled) { copied, length ->
+                            val frac = if (length > 0L) (copied.toFloat() / length).coerceIn(0f, 1f) else 0f
+                            onProgress((base + slice * frac) * videoShare)
+                        }
+                        onProgress(((index + 1).toFloat() / unique.size) * videoShare)
+                    }
                 }
+            } catch (error: Throwable) {
+                if (cancelled() || error.message == "İptal edildi") dest.delete()
+                throw error
             }
         }
-        downloadSubtitles(resolved, head, dest)
+        if (cancelled()) error("İptal edildi")
+        downloadSubtitles(resolved, head, dest, cancelled) { frac ->
+            onProgress(videoShare + (1f - videoShare) * frac)
+        }
+        if (cancelled()) error("İptal edildi")
         return dest
     }
 
-    private fun downloadSubtitles(masterUrl: String, master: String, videoFile: File) {
-        subtitleEntries(master).forEach { (lang, uri) ->
+    private fun downloadSubtitles(
+        masterUrl: String,
+        master: String,
+        videoFile: File,
+        cancelled: () -> Boolean,
+        onProgress: (Float) -> Unit,
+    ) {
+        val entries = subtitleEntries(master)
+        if (entries.isEmpty()) return
+        entries.forEachIndexed { index, (lang, uri) ->
+            if (cancelled()) error("İptal edildi")
             val playlistUrl = resolve(masterUrl, uri)
-            val body = fetchText(playlistUrl) ?: return@forEach
+            val body = fetchText(playlistUrl) ?: return@forEachIndexed
             val parts = mediaLines(body).filter { it.isNotEmpty() && !it.startsWith("#") }
-            if (parts.isEmpty()) return@forEach
+            if (parts.isEmpty()) return@forEachIndexed
             val outFile = File(videoFile.parentFile, "${videoFile.nameWithoutExtension}.$lang.vtt")
             val text = buildString {
                 appendLine("WEBVTT")
                 appendLine()
                 parts.forEach { ref ->
+                    if (cancelled()) error("İptal edildi")
                     val chunk = runCatching { String(httpBytes(resolve(playlistUrl, ref)), Charsets.UTF_8) }
                         .getOrNull() ?: return@forEach
                     append(stripVttHeader(chunk).trim())
@@ -299,6 +441,7 @@ internal object VodDownloader {
                 }
             }
             outFile.writeText(text, Charsets.UTF_8)
+            onProgress((index + 1).toFloat() / entries.size)
         }
     }
 
@@ -349,24 +492,19 @@ internal object VodDownloader {
         cancelled: () -> Boolean,
         onProgress: (Float) -> Unit,
     ) {
-        val conn = open(url)
-        val total = conn.contentLengthLong.takeIf { it > 0L } ?: -1L
-        conn.inputStream.use { input ->
+        try {
             FileOutputStream(dest).use { out ->
-                val buf = ByteArray(64 * 1024)
-                var copied = 0L
-                while (true) {
-                    if (cancelled()) error("İptal edildi")
-                    val n = input.read(buf)
-                    if (n < 0) break
-                    out.write(buf, 0, n)
-                    copied += n
-                    if (total > 0L) onProgress((copied.toFloat() / total).coerceIn(0f, 1f))
+                if (cancelled()) error("İptal edildi")
+                StreamHttp.copyTo(url, out, cancelled) { copied, length ->
+                    if (length > 0L) onProgress((copied.toFloat() / length).coerceIn(0f, 1f))
                 }
             }
+            if (cancelled()) error("İptal edildi")
+            onProgress(1f)
+        } catch (error: Throwable) {
+            if (cancelled() || error.message == "İptal edildi") dest.delete()
+            throw error
         }
-        conn.disconnect()
-        onProgress(1f)
     }
 
     private fun stripVttHeader(raw: String): String {
@@ -386,42 +524,7 @@ internal object VodDownloader {
 
     private fun fetchText(url: String): String? = runCatching { String(httpBytes(url), Charsets.UTF_8) }.getOrNull()
 
-    private fun httpBytes(url: String): ByteArray {
-        val conn = open(url)
-        return try {
-            conn.inputStream.use { it.readBytes() }
-        } finally {
-            conn.disconnect()
-        }
-    }
-
-    private fun httpCopy(url: String, out: FileOutputStream): Long {
-        val conn = open(url)
-        return try {
-            conn.inputStream.use { input ->
-                val buf = ByteArray(64 * 1024)
-                var total = 0L
-                while (true) {
-                    val n = input.read(buf)
-                    if (n < 0) break
-                    out.write(buf, 0, n)
-                    total += n
-                }
-                total
-            }
-        } finally {
-            conn.disconnect()
-        }
-    }
-
-    private fun open(url: String): HttpURLConnection {
-        val conn = URL(StreamProbe.resolveFinalUrl(url)).openConnection() as HttpURLConnection
-        conn.connectTimeout = 15_000
-        conn.readTimeout = 30_000
-        conn.instanceFollowRedirects = true
-        conn.setRequestProperty("User-Agent", StreamProbe.USER_AGENT)
-        return conn
-    }
+    private fun httpBytes(url: String): ByteArray = StreamHttp.readBytes(url)
 
     private fun resolve(base: String, ref: String): String {
         if (ref.startsWith("http://") || ref.startsWith("https://")) return ref

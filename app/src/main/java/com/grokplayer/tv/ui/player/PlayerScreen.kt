@@ -92,7 +92,6 @@ import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.BehindLiveWindowException
@@ -108,6 +107,7 @@ import com.grokplayer.tv.data.LibraryStore
 import com.grokplayer.tv.data.PlaySession
 import com.grokplayer.tv.data.PlaybackSettings
 import com.grokplayer.tv.data.PreviewGrabber
+import com.grokplayer.tv.data.StreamHttp
 import com.grokplayer.tv.data.StreamProbe
 import com.grokplayer.tv.data.ThumbnailCache
 import com.grokplayer.tv.data.formatClock
@@ -176,15 +176,15 @@ fun PlayerScreen(
     var pausedLiveOffset by remember { mutableLongStateOf(0L) }
     var hideGen by remember { mutableIntStateOf(0) }
     var audioAnnounced by remember { mutableStateOf(false) }
+    var skipNextUp by remember { mutableStateOf(true) }
+    val skipNextUpRef = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
+    var nextUpVisible by remember { mutableStateOf(false) }
+    var nextUpFocused by remember { mutableStateOf(false) }
+    val nextUpFocus = remember { FocusRequester() }
     val seekStepMs = settings.seekStepSeconds * 1000L
 
     val player = remember {
-        val http = DefaultHttpDataSource.Factory()
-            .setUserAgent(StreamProbe.USER_AGENT)
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(20_000)
-            .setReadTimeoutMs(20_000)
-        val data = DefaultDataSource.Factory(context, http)
+        val data = DefaultDataSource.Factory(context, StreamHttp.dataSourceFactory(context))
         val tracks = DefaultTrackSelector(context).apply {
             val params = buildUponParameters()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
@@ -240,14 +240,14 @@ fun PlayerScreen(
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
+                Log.i(
+                    "GrokPlayer",
+                    "open ${session.queue[index].format} state=$playbackState pos=${player.currentPosition}",
+                )
                 if (playbackState == Player.STATE_READY) {
-                    Log.i(
-                        "GrokPlayer",
-                        "open ${session.queue[index].format} ready pos=${player.currentPosition}",
-                    )
                     applyPendingSubtitles(player)
                 }
-                if (playbackState == Player.STATE_ENDED && settings.autoNext && index < session.queue.lastIndex) {
+                if (playbackState == Player.STATE_ENDED && settings.autoNext && skipNextUpRef.get() && index < session.queue.lastIndex) {
                     index += 1
                 } else if (playbackState == Player.STATE_ENDED) {
                     controls = true
@@ -264,7 +264,12 @@ fun PlayerScreen(
                     player.play()
                     return
                 }
-                toast = "Oynatılamadı"
+                toast = when (error.errorCode) {
+                    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+                    -> "Bağlantı kurulamadı"
+                    else -> "Oynatılamadı"
+                }
                 controls = true
             }
 
@@ -303,7 +308,7 @@ fun PlayerScreen(
         }
         player.addListener(listener)
         onDispose {
-            library.markPlayed(session.queue[index].id, player.currentPosition)
+            library.markPlayed(session.queue[index], player.currentPosition)
             player.removeListener(listener)
             player.release()
         }
@@ -331,7 +336,7 @@ fun PlayerScreen(
         audioAnnounced = false
         selectedSubtitleKey = SubtitleOption.Off.key
         subtitleOptions = listOf(SubtitleOption.Off)
-        val start = if (resume && settings.resumeEnabled && !item.isLive) library.progressOf(item.id) else 0L
+        val start = if (resume && settings.resumeEnabled && !item.isLive) library.startPosition(item) else 0L
         library.touch(item, start)
         val nearEnd = item.durationMs > 0L && start >= item.durationMs - 2_000L
         val avi = item.format.equals("AVI", true)
@@ -345,6 +350,10 @@ fun PlayerScreen(
         controls = true
         previewVisible = false
         previewFrames = emptyMap()
+        skipNextUp = true
+        skipNextUpRef.set(true)
+        nextUpVisible = false
+        nextUpFocused = false
         if (item.isStream) {
             delay(1_600)
             capturePlayerBitmap(playerView)?.let { frame ->
@@ -415,6 +424,13 @@ fun PlayerScreen(
                 pausedLiveAt = 0L
                 position = player.currentPosition
                 duration = windowDuration.takeIf { it > 0 && it != C.TIME_UNSET } ?: item.durationMs
+                val remain = duration - position
+                nextUpVisible = settings.autoNext &&
+                    skipNextUp &&
+                    !item.isLive &&
+                    index < session.queue.lastIndex &&
+                    duration > 20_000L &&
+                    remain in 1L..15_000L
             }
             delay(250)
         }
@@ -562,6 +578,13 @@ fun PlayerScreen(
                 playlistOpen = false
                 true
             }
+            nextUpFocused -> {
+                nextUpFocused = false
+                nextUpVisible = false
+                skipNextUp = false
+                skipNextUpRef.set(false)
+                true
+            }
             else -> {
                 closePlayer()
                 true
@@ -591,6 +614,23 @@ fun PlayerScreen(
                 }
                 if (handleSubtitleKey(event)) return@onPreviewKeyEvent true
                 if (playlistOpen || speedOpen) return@onPreviewKeyEvent false
+                if (nextUpVisible && !nextUpFocused && event.key == Key.DirectionDown) {
+                    nextUpFocused = true
+                    showControls()
+                    return@onPreviewKeyEvent true
+                }
+                if (!controls) {
+                    val openChrome = event.key == Key.DirectionCenter ||
+                        event.key == Key.Enter ||
+                        event.key == Key.DirectionDown ||
+                        event.key == Key.DirectionUp ||
+                        event.key == Key.DirectionLeft ||
+                        event.key == Key.DirectionRight
+                    if (openChrome) {
+                        showControls()
+                        return@onPreviewKeyEvent true
+                    }
+                }
                 val left = event.key == Key.DirectionLeft
                 val right = event.key == Key.DirectionRight
                 val repeats = event.nativeKeyEvent.repeatCount
@@ -756,6 +796,36 @@ fun PlayerScreen(
             )
         }
 
+        if (nextUpVisible && index < session.queue.lastIndex) {
+            val upcoming = session.queue[index + 1]
+            NextUpCard(
+                title = upcoming.title,
+                remainingMs = (duration - position).coerceAtLeast(0L),
+                focused = nextUpFocused,
+                playFocus = nextUpFocus,
+                onPlayNow = {
+                    nextUpVisible = false
+                    nextUpFocused = false
+                    index += 1
+                },
+                onCancel = {
+                    nextUpVisible = false
+                    nextUpFocused = false
+                    skipNextUp = false
+                    skipNextUpRef.set(false)
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 28.dp, bottom = if (controls) 168.dp else 36.dp),
+            )
+            LaunchedEffect(nextUpFocused) {
+                if (nextUpFocused) {
+                    delay(40)
+                    runCatching { nextUpFocus.requestFocus() }
+                }
+            }
+        }
+
         toast?.let {
             Text(
                 text = it,
@@ -770,10 +840,14 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(controls, playlistOpen, speedOpen, subtitleOpen) {
-        if (controls && !playlistOpen && !speedOpen && !subtitleOpen) {
-            delay(30)
-            runCatching { seekFocus.requestFocus() }
+    LaunchedEffect(controls, playlistOpen, speedOpen, subtitleOpen, live, duration) {
+        if (playlistOpen || speedOpen || subtitleOpen) return@LaunchedEffect
+        delay(30)
+        if (!controls) {
+            runCatching { playerRootFocus.requestFocus() }
+        } else {
+            val target = if (live && duration <= 0L) playFocus else seekFocus
+            runCatching { target.requestFocus() }
         }
     }
 }
@@ -836,6 +910,73 @@ private fun TopBar(
 }
 
 @Composable
+private fun NextUpCard(
+    title: String,
+    remainingMs: Long,
+    focused: Boolean,
+    playFocus: FocusRequester,
+    onPlayNow: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val cancelFocus = remember { FocusRequester() }
+    Column(
+        modifier
+            .width(300.dp)
+            .background(GrokSurface.copy(alpha = 0.92f), RoundedCornerShape(12.dp))
+            .border(1.dp, GrokYellow.copy(alpha = if (focused) 0.7f else 0.22f), RoundedCornerShape(12.dp))
+            .padding(12.dp),
+    ) {
+        Text("Sıradaki", style = GrokType.eyebrow, color = GrokYellow)
+        Text(title, style = GrokType.cardTitle, color = GrokWhite, modifier = Modifier.padding(top = 4.dp), maxLines = 2)
+        Text(
+            "${remainingMs.formatClock()} · Aşağı ile seç",
+            style = GrokType.cardMeta,
+            color = GrokMuted,
+            modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            com.grokplayer.tv.ui.components.FocusableAction(
+                onClick = onPlayNow,
+                modifier = Modifier
+                    .weight(1f)
+                    .focusRequester(playFocus)
+                    .focusProperties { right = cancelFocus },
+            ) { on ->
+                Text(
+                    "Şimdi oynat",
+                    style = GrokType.button,
+                    color = if (on) GrokInk else GrokWhite,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(if (on) GrokYellow else GrokInk.copy(0.35f), RoundedCornerShape(6.dp))
+                        .padding(vertical = 8.dp)
+                        .padding(horizontal = 8.dp),
+                )
+            }
+            com.grokplayer.tv.ui.components.FocusableAction(
+                onClick = onCancel,
+                modifier = Modifier
+                    .weight(1f)
+                    .focusRequester(cancelFocus)
+                    .focusProperties { left = playFocus },
+            ) { on ->
+                Text(
+                    "İptal",
+                    style = GrokType.button,
+                    color = if (on) GrokInk else GrokWhite,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(if (on) GrokYellow else GrokInk.copy(0.35f), RoundedCornerShape(6.dp))
+                        .padding(vertical = 8.dp)
+                        .padding(horizontal = 8.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun BottomControls(
     playing: Boolean,
     position: Long,
@@ -884,16 +1025,14 @@ private fun BottomControls(
         } else {
             Spacer(Modifier.height(118.dp))
         }
-        if (!live || duration > 0L) {
-            SeekBar(
-                progress = progress,
-                focusedRequester = seekFocus,
-                playFocus = playFocus,
-                live = live,
-                onFocused = onSeekFocused,
-                onPlayPause = onPlayPause,
-            )
-        }
+        SeekBar(
+            progress = progress,
+            focusedRequester = seekFocus,
+            playFocus = playFocus,
+            live = live,
+            onFocused = onSeekFocused,
+            onPlayPause = onPlayPause,
+        )
         Row(
             Modifier
                 .fillMaxWidth()
@@ -1065,7 +1204,7 @@ private fun selectedAudioFormat(tracks: Tracks): androidx.media3.common.Format? 
 
 private fun mediaItemFor(video: com.grokplayer.tv.data.LibraryVideo): MediaItem {
     val raw = video.uri.toString()
-    val resolved = if (raw.startsWith("http")) StreamProbe.resolveFinalUrl(raw) else raw
+    val resolved = if (raw.startsWith("http")) StreamProbe.playUrl(raw) else raw
     val builder = MediaItem.Builder().setUri(resolved)
     when {
         StreamProbe.mimeForUrl(resolved) != null -> {

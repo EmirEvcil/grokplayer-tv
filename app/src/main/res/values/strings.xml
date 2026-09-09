@@ -26,6 +26,7 @@
     <string name="sort_oldest">En eski</string>
     <string name="sort_az">A-Z</string>
     <string name="sort_newest">En yeni</string>
+    <string name="sort_episode">Bölüm sırası</string>
     <string name="browse_storage">Gözat…</string>
     <string name="add_folder_body">Dahili depolama veya USB sürücüden bir klasör seçin.</string>
     <string name="volume_internal">Dahili depolama</string>
