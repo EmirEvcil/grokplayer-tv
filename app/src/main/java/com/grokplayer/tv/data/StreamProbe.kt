@@ -84,13 +84,21 @@ object StreamProbe {
         }
     }
 
-    fun mimeForUrl(url: String): String? {
+    fun isDash(url: String): Boolean {
         val lower = url.lowercase()
-        return when {
-            ".m3u8" in lower -> "application/x-mpegURL"
-            ".mpd" in lower -> "application/dash+xml"
-            else -> null
-        }
+        return ".mpd" in lower || "/dash/" in lower
+    }
+
+    fun isHls(url: String): Boolean {
+        if (isDash(url)) return false
+        val lower = url.lowercase()
+        return ".m3u8" in lower || "hls_variant" in lower || "manifest.googlevideo.com" in lower
+    }
+
+    fun mimeForUrl(url: String): String? = when {
+        isHls(url) -> "application/x-mpegURL"
+        isDash(url) -> "application/dash+xml"
+        else -> null
     }
 
     private fun fetchPrefix(url: String): String? {

@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 class LibraryStore(context: Context) {
     private val app = context.applicationContext
     private val prefs = app.getSharedPreferences("library", Context.MODE_PRIVATE)
+    val watch = WatchStore(File(app.filesDir, "watch.json"))
 
     var videos by mutableStateOf<List<LibraryVideo>>(emptyList())
         private set
@@ -61,6 +62,7 @@ class LibraryStore(context: Context) {
                 if (parts.size == 2) parts[0] to (parts[1].toLongOrNull() ?: return@mapNotNull null) else null
             }
             .toMap()
+        watch.importLegacy(progress, keyedProgress, videos)
     }
 
     private fun persistKeyed() {
@@ -112,20 +114,48 @@ class LibraryStore(context: Context) {
             keyedProgress = keyedProgress + (key to positionMs)
             persistKeyed()
         }
+        watch.onPlayed(video, positionMs, video.durationMs)
     }
 
     fun startPosition(video: LibraryVideo, remoteMs: Long = 0L): Long {
+        if (!video.isVod()) return 0L
+        if (watch.status(video) == WatchStatus.Unwatched) return 0L
         val local = progress[video.id] ?: 0L
         val keyed = video.fileKey()?.let { keyedProgress[it] } ?: 0L
-        return maxOf(local, keyed, remoteMs)
+        val titled = keyedProgress["title|${video.title.trim().lowercase()}"] ?: 0L
+        val aliases = keyedProgress
+            .filterKeys { matchesProgress(video, it, it.removePrefix("title|")) }
+            .values
+            .maxOrNull() ?: 0L
+        return maxOf(watch.positionMs(video), local, keyed, titled, aliases, remoteMs)
     }
 
-    fun applyRemoteProgress(key: String, positionMs: Long) {
+    fun applyRemoteProgress(key: String, positionMs: Long, title: String? = null) {
         if (key.isBlank() || positionMs < 1_000L) return
-        val current = keyedProgress[key] ?: 0L
-        if (positionMs > current) {
-            keyedProgress = keyedProgress + (key to positionMs)
+        var nextKeyed = keyedProgress
+        fun bump(mapKey: String) {
+            val current = nextKeyed[mapKey] ?: 0L
+            if (positionMs > current) nextKeyed = nextKeyed + (mapKey to positionMs)
+        }
+        bump(key)
+        title?.trim()?.lowercase()?.takeIf { it.isNotBlank() }?.let { bump("title|$it") }
+        var nextProgress = progress
+        (videos + opened).distinctBy { it.id }.forEach { video ->
+            if (!matchesProgress(video, key, title)) return@forEach
+            video.fileKey()?.let { bump(it) }
+            bump("title|${video.title.trim().lowercase()}")
+            if (positionMs > (nextProgress[video.id] ?: 0L)) {
+                nextProgress = nextProgress + (video.id to positionMs)
+                watch.onPlayed(video, positionMs, video.durationMs)
+            }
+        }
+        if (nextKeyed !== keyedProgress) {
+            keyedProgress = nextKeyed
             persistKeyed()
+        }
+        if (nextProgress !== progress) {
+            progress = nextProgress
+            persistState()
         }
     }
 
@@ -139,8 +169,14 @@ class LibraryStore(context: Context) {
         if (positionMs > 0L || video.isLive || video.isStream) {
             progress = progress + (video.id to positionMs)
         }
+        if (positionMs > 0L) watch.onPlayed(video, positionMs, video.durationMs)
         persistState()
         persistOpened()
+    }
+
+    fun noteListPlay(listId: String?, video: LibraryVideo) {
+        if (listId.isNullOrBlank()) return
+        watch.setCursor(listId, video)
     }
 
     fun bindDownloadTitles(lookup: (String) -> String?) {
@@ -177,11 +213,7 @@ class LibraryStore(context: Context) {
 
     fun progressOf(id: String): Long = progress[id] ?: 0L
 
-    fun progressFraction(video: LibraryVideo): Float? {
-        val pos = progress[video.id] ?: return null
-        if (video.durationMs <= 0L || pos <= 1_000L) return null
-        return (pos.toFloat() / video.durationMs).coerceIn(0.04f, 0.96f)
-    }
+    fun progressFraction(video: LibraryVideo): Float? = watch.progressFraction(video)
 
     fun recentVideos(): List<LibraryVideo> {
         val out = ArrayList<LibraryVideo>(10)
@@ -205,7 +237,8 @@ class LibraryStore(context: Context) {
         return true
     }
 
-    fun continueWatching(): LibraryVideo? = recentVideos().firstOrNull()
+    fun continueWatching(): LibraryVideo? =
+        recentVideos().firstOrNull { watch.status(it) == WatchStatus.Watching }
 
     private fun loadFolders(): List<String> =
         prefs.getStringSet("folders", emptySet())?.toList().orEmpty()

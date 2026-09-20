@@ -133,9 +133,11 @@ fun HomeScreen(
         return
     }
 
-    val queue = recents.ifEmpty { listOf(hero) }
-    val heroIndex = queue.indexOfFirst { it.id == hero.id }.coerceAtLeast(0)
-    val position = library.progressOf(hero.id)
+    val (queue, heroIndex) = com.grokplayer.tv.data.vodQueue(
+        recents.ifEmpty { listOf(hero) },
+        hero.id,
+    )
+    val position = library.startPosition(hero)
 
     Box(modifier.fillMaxSize()) {
         VideoPoster(
@@ -271,7 +273,8 @@ fun HomeScreen(
                                 onClick = {
                                     lastLaunch = HomeLaunch.Card
                                     lastCardId = item.id
-                                    onPlay(recents, index, true)
+                                    val (q, i) = com.grokplayer.tv.data.vodQueue(recents, index)
+                                    onPlay(q, i, true)
                                 },
                             )
                         }
@@ -326,6 +329,13 @@ private fun RecentCard(
             progress = progress,
             path = video.path,
             format = video.format,
+            posterUrl = video.posterUrl,
+            durationMs = video.durationMs,
+            isLive = video.isLive,
+            enablePreview = true,
+            originUrl = video.originUrl,
+            referer = video.referer,
+            userAgent = video.userAgent,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)

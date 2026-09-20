@@ -83,14 +83,85 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
 
     fun statusOf(url: String): DownloadStatus? = items.firstOrNull { it.url == url }?.status
 
+    fun retry(id: String, url: String? = null, title: String? = null): Boolean {
+        val item = items.firstOrNull { it.id == id } ?: return false
+        if (item.status != DownloadStatus.Failed &&
+            !(item.status == DownloadStatus.Done && item.localPath?.let { File(it).exists() } != true)
+        ) {
+            return false
+        }
+        purgePartial(item)
+        items = items.map {
+            if (it.id == id) {
+                it.copy(
+                    title = title?.ifBlank { it.title } ?: it.title,
+                    url = url?.ifBlank { it.url } ?: it.url,
+                    status = DownloadStatus.Queued,
+                    progress = 0f,
+                    error = null,
+                    localPath = null,
+                )
+            } else {
+                it
+            }
+        }
+        persist()
+        pump(settings.downloadHeight)
+        return true
+    }
+
+    fun enqueueAll(
+        requests: List<Pair<String, String>>,
+        maxHeight: Int = settings.downloadHeight,
+    ): DownloadPolicy.BatchResult {
+        var queued = 0
+        var retried = 0
+        var skippedDone = 0
+        var skippedActive = 0
+        requests.forEach { (title, url) ->
+            when (enqueue(title, url, maxHeight, count = false)) {
+                DownloadPolicy.Action.Enqueue -> queued += 1
+                DownloadPolicy.Action.RetryFailed -> retried += 1
+                DownloadPolicy.Action.SkipDone -> skippedDone += 1
+                DownloadPolicy.Action.SkipActive -> skippedActive += 1
+            }
+        }
+        pump(maxHeight)
+        return DownloadPolicy.BatchResult(queued, retried, skippedDone, skippedActive)
+    }
+
     fun enqueue(title: String, url: String, maxHeight: Int = settings.downloadHeight): String? {
-        val existing = items.firstOrNull { it.url == url }
-        if (existing?.status == DownloadStatus.Queued || existing?.status == DownloadStatus.Running) {
-            return null
+        val snapshots = items.map {
+            DownloadPolicy.Snapshot(it.id, it.title, it.url, it.status, it.localPath)
         }
-        if (existing?.status == DownloadStatus.Done && existing.localPath?.let { File(it).exists() } == true) {
-            return existing.id
+        val existingId = DownloadPolicy.decide(snapshots, title, url) { path -> File(path).exists() }.existingId
+        return when (enqueue(title, url, maxHeight, count = true)) {
+            DownloadPolicy.Action.SkipActive -> null
+            else -> existingId ?: items.firstOrNull {
+                DownloadPolicy.identity(it.title, it.url) == DownloadPolicy.identity(title, url)
+            }?.id
         }
+    }
+
+    private fun enqueue(
+        title: String,
+        url: String,
+        maxHeight: Int,
+        count: Boolean,
+    ): DownloadPolicy.Action {
+        val snapshots = items.map {
+            DownloadPolicy.Snapshot(it.id, it.title, it.url, it.status, it.localPath)
+        }
+        val decision = DownloadPolicy.decide(snapshots, title, url) { path -> File(path).exists() }
+        when (decision.action) {
+            DownloadPolicy.Action.SkipDone, DownloadPolicy.Action.SkipActive -> return decision.action
+            DownloadPolicy.Action.RetryFailed -> {
+                decision.existingId?.let { retry(it, url = url, title = title) }
+                return DownloadPolicy.Action.RetryFailed
+            }
+            DownloadPolicy.Action.Enqueue -> Unit
+        }
+        val existing = decision.existingId?.let { id -> items.firstOrNull { it.id == id } }
         if (existing != null && existing.status != DownloadStatus.Done) {
             purgePartial(existing)
         }
@@ -104,10 +175,12 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
             error = null,
             addedAt = System.currentTimeMillis(),
         )
-        items = listOf(item) + items.filterNot { it.url == url }
+        items = listOf(item) + items.filterNot {
+            DownloadPolicy.identity(it.title, it.url) == DownloadPolicy.identity(title, url)
+        }
         persist()
-        pump(maxHeight)
-        return item.id
+        if (count) pump(maxHeight)
+        return DownloadPolicy.Action.Enqueue
     }
 
     fun cancel(id: String) {

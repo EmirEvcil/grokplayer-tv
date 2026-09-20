@@ -12,8 +12,9 @@ android {
         applicationId = "com.grokplayer.tv"
         minSdk = 24
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.2.6"
+        versionCode = 58
+        versionName = "0.2.56"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -71,4 +72,11 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.compose.ui:ui-test")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

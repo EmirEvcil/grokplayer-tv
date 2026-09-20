@@ -18,12 +18,17 @@ data class StreamItem(
     val kind: StreamKind,
     val favorite: Boolean,
     val addedAt: Long,
+    val posterUrl: String? = null,
+    val referer: String? = null,
+    val userAgent: String? = null,
+    val durationMs: Long = 0L,
+    val pageUrl: String? = null,
 ) {
     fun toVideo(): LibraryVideo = LibraryVideo(
         id = "stream:$id",
         title = title,
         uri = Uri.parse(url),
-        durationMs = 0L,
+        durationMs = durationMs,
         format = if (kind == StreamKind.Live) "CANLI" else "VOD",
         source = StorageSource.Internal,
         dateAdded = addedAt,
@@ -31,7 +36,10 @@ data class StreamItem(
         path = null,
         isLive = kind == StreamKind.Live,
         isStream = true,
-        originUrl = url,
+        originUrl = pageUrl ?: url,
+        posterUrl = posterUrl,
+        referer = referer,
+        userAgent = userAgent,
     )
 }
 
@@ -41,7 +49,16 @@ class StreamStore(context: Context) {
     var items by mutableStateOf(load())
         private set
 
-    fun add(title: String, url: String, kind: StreamKind = StreamKind.Vod) {
+    fun add(
+        title: String,
+        url: String,
+        kind: StreamKind = StreamKind.Vod,
+        posterUrl: String? = null,
+        referer: String? = null,
+        userAgent: String? = null,
+        durationMs: Long = 0L,
+        pageUrl: String? = null,
+    ) {
         val cleanUrl = url.trim()
         if (cleanUrl.isBlank()) return
         val item = StreamItem(
@@ -51,6 +68,11 @@ class StreamStore(context: Context) {
             kind = kind,
             favorite = false,
             addedAt = System.currentTimeMillis(),
+            posterUrl = posterUrl,
+            referer = referer,
+            userAgent = userAgent,
+            durationMs = durationMs,
+            pageUrl = pageUrl?.trim()?.ifBlank { null },
         )
         items = listOf(item) + items
         persist()
@@ -81,7 +103,12 @@ class StreamStore(context: Context) {
                     .put("url", item.url)
                     .put("kind", item.kind.name)
                     .put("favorite", item.favorite)
-                    .put("addedAt", item.addedAt),
+                    .put("addedAt", item.addedAt)
+                    .put("posterUrl", item.posterUrl)
+                    .put("referer", item.referer)
+                    .put("userAgent", item.userAgent)
+                    .put("durationMs", item.durationMs)
+                    .put("pageUrl", item.pageUrl),
             )
         }
         prefs.edit().putString("items", array.toString()).apply()
@@ -103,6 +130,11 @@ class StreamStore(context: Context) {
                                 .getOrDefault(StreamKind.Vod),
                             favorite = obj.optBoolean("favorite"),
                             addedAt = obj.optLong("addedAt"),
+                            posterUrl = obj.optString("posterUrl").ifBlank { null },
+                            referer = obj.optString("referer").ifBlank { null },
+                            userAgent = obj.optString("userAgent").ifBlank { null },
+                            durationMs = obj.optLong("durationMs"),
+                            pageUrl = obj.optString("pageUrl").ifBlank { null },
                         ),
                     )
                 }

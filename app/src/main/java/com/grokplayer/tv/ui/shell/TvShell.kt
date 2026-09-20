@@ -67,6 +67,8 @@ import com.grokplayer.tv.data.LibraryStore
 import com.grokplayer.tv.data.LibraryVideo
 import com.grokplayer.tv.data.PlaySession
 import com.grokplayer.tv.data.PlaybackSettings
+import com.grokplayer.tv.data.CollectionStore
+import com.grokplayer.tv.data.PlaylistStore
 import com.grokplayer.tv.data.StreamStore
 import com.grokplayer.tv.data.link.LinkController
 import com.grokplayer.tv.data.link.PairedPc
@@ -86,6 +88,7 @@ import com.grokplayer.tv.ui.downloads.DownloadsScreen
 import com.grokplayer.tv.ui.home.HomeScreen
 import com.grokplayer.tv.ui.settings.SettingsCategory
 import com.grokplayer.tv.ui.settings.SettingsScreen
+import com.grokplayer.tv.ui.lists.ListelerScreen
 import com.grokplayer.tv.ui.streams.StreamsScreen
 import com.grokplayer.tv.ui.search.SearchOverlay
 import com.grokplayer.tv.ui.search.SearchTarget
@@ -117,6 +120,8 @@ fun TvShell() {
     val library = remember { LibraryStore(context) }
     val settings = remember { PlaybackSettings(context) }
     val streams = remember { StreamStore(context) }
+    val playlists = remember { PlaylistStore(context) }
+    val collections = remember { CollectionStore(context) }
     val downloads = remember { DownloadStore(context, settings) }
     LaunchedEffect(downloads.items) {
         library.bindDownloadTitles { path -> downloads.titleForPath(path) }
@@ -125,7 +130,9 @@ fun TvShell() {
     val linkUi by link.ui.collectAsState()
     LaunchedEffect(linkUi.remote?.have) {
         linkUi.remote?.have?.forEach { item ->
-            if (item.positionMs >= 1_000L) library.applyRemoteProgress(item.key, item.positionMs)
+            if (item.positionMs >= 1_000L) {
+                library.applyRemoteProgress(item.key, item.positionMs, item.title)
+            }
         }
     }
     LaunchedEffect(linkUi.connectedId) {
@@ -147,18 +154,26 @@ fun TvShell() {
     var transferJobId by remember { mutableStateOf<String?>(null) }
     var transfersOpen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    var destination by remember { mutableStateOf(settings.startScreen) }
+    val pendingScanUrl = remember {
+        (context as? android.app.Activity)?.intent?.getStringExtra("scan_url")?.trim().orEmpty()
+            .ifBlank { null }
+    }
+    var destination by remember {
+        mutableStateOf(if (pendingScanUrl != null) Destination.Streams else settings.startScreen)
+    }
+    var seedScanUrl by remember { mutableStateOf(pendingScanUrl) }
     var notice by remember { mutableStateOf<String?>(null) }
     var lastSettingsCategory by rememberSaveable { mutableStateOf(SettingsCategory.Playback.name) }
     var session by remember { mutableStateOf<PlaySession?>(null) }
     var resumePlayback by remember { mutableStateOf(true) }
+    var promptResume by remember { mutableStateOf(false) }
     var searchOpen by remember { mutableStateOf(false) }
     var focusVideoId by remember { mutableStateOf<String?>(null) }
     var focusStreamId by remember { mutableStateOf<String?>(null) }
     var focusHomeId by remember { mutableStateOf<String?>(null) }
     var focusSettingKey by remember { mutableStateOf<String?>(null) }
     var focusDeviceId by remember { mutableStateOf<String?>(null) }
-    val focusLock = remember { mutableStateOf(false) }
+    val focusLock = remember { com.grokplayer.tv.data.FocusLock() }
     val backHub = remember { BackHub() }
     val navFocus = remember { Destination.entries.associateWith { FocusRequester() } }
     val pageFocus = remember { Destination.entries.associateWith { FocusRequester() } }
@@ -250,7 +265,16 @@ fun TvShell() {
         Box(
             Modifier
                 .fillMaxSize()
-                .background(GrokInk),
+                .background(GrokInk)
+                .onPreviewKeyEvent { event ->
+                    val ok = event.key == Key.DirectionCenter || event.key == Key.Enter
+                    if (!ok) return@onPreviewKeyEvent false
+                    com.grokplayer.tv.data.KeyGate.onOk(
+                        down = event.type == KeyEventType.KeyDown,
+                        up = event.type == KeyEventType.KeyUp,
+                        repeatCount = event.nativeKeyEvent.repeatCount,
+                    )
+                },
         ) {
             val playing = session
             val modalOpen = deviceMenuPc != null || hubPc != null || searchOpen ||
@@ -268,7 +292,7 @@ fun TvShell() {
                 SideRail(
                     selected = destination,
                     navFocus = navFocus,
-                    locked = focusLock.value || session != null,
+                    locked = focusLock.locked || session != null,
                     onSelect = { destination = it },
                     onEnter = { dest ->
                         destination = dest
@@ -298,23 +322,46 @@ fun TvShell() {
                                 library = library,
                                 onPlay = { queue, index, resume ->
                                     resumePlayback = resume
+                                    promptResume = false
                                     session = PlaySession(queue, index)
                                 },
                                 focusItemId = focusHomeId,
                                 onFocusConsumed = { focusHomeId = null },
                                 modifier = Modifier.fillMaxSize(),
                             )
+                            Destination.Lists -> ListelerScreen(
+                                firstFocus = focus,
+                                railFocus = rail,
+                                link = link,
+                                playlists = playlists,
+                                collections = collections,
+                                downloads = downloads,
+                                localVideos = library.videos,
+                                playerOpen = session != null,
+                                watch = library.watch,
+                                onPlay = { queue, index, resume, listId ->
+                                    resumePlayback = resume
+                                    promptResume = resume
+                                    session = PlaySession(queue, index, listId)
+                                },
+                                onNotice = { notice = it },
+                                modifier = Modifier.fillMaxSize(),
+                            )
                             Destination.Videos -> VideosScreen(
                                 firstFocus = focus,
                                 railFocus = rail,
                                 library = library,
-                                onPlay = { queue, index, resume ->
+                                onPlay = { queue, index, resume, ask ->
                                     resumePlayback = resume
+                                    promptResume = ask
                                     session = PlaySession(queue, index)
                                 },
                                 canSend = linkUi.paired.isNotEmpty(),
                                 onSend = { sendVideo = it },
                                 remote = linkUi.remote,
+                                playlists = playlists,
+                                collections = collections,
+                                onNotice = { notice = it },
                                 focusVideoId = focusVideoId,
                                 onFocusConsumed = { focusVideoId = null },
                                 modifier = Modifier.fillMaxSize(),
@@ -327,6 +374,7 @@ fun TvShell() {
                                 downloadHeight = settings.downloadHeight,
                                 onPlay = { queue, index ->
                                     resumePlayback = true
+                                    promptResume = true
                                     session = PlaySession(queue, index)
                                 },
                                 onNotice = { notice = it },
@@ -334,14 +382,21 @@ fun TvShell() {
                                 onSend = { sendVideo = it },
                                 focusStreamId = focusStreamId,
                                 onFocusConsumed = { focusStreamId = null },
+                                initialScanUrl = seedScanUrl,
+                                onScanConsumed = { seedScanUrl = null },
+                                playlists = playlists,
+                                collections = collections,
+                                watch = library.watch,
                                 modifier = Modifier.fillMaxSize(),
                             )
                             Destination.Downloads -> DownloadsScreen(
                                 firstFocus = focus,
                                 railFocus = rail,
                                 downloads = downloads,
+                                watch = library.watch,
                                 onPlay = { queue, index ->
                                     resumePlayback = true
+                                    promptResume = true
                                     session = PlaySession(queue, index)
                                 },
                                 onRemoved = { item ->
@@ -375,30 +430,13 @@ fun TvShell() {
                             .align(Alignment.TopEnd)
                             .padding(top = 18.dp, end = 28.dp),
                         downFocus = pageFocus.getValue(destination),
-                        onSearch = { if (!focusLock.value) searchOpen = true },
+                        onSearch = { if (!focusLock.locked) searchOpen = true },
                     )
                 }
             }
             DisposableEffect(session != null) {
                 ThumbnailCache.playbackActive = session != null
                 onDispose { ThumbnailCache.playbackActive = false }
-            }
-            if (playing != null) {
-                PlayerScreen(
-                    session = playing,
-                    resume = resumePlayback,
-                    library = library,
-                    settings = settings,
-                    onClose = { lastId ->
-                        session = null
-                        when (destination) {
-                            Destination.Videos -> focusVideoId = lastId
-                            Destination.Streams -> focusStreamId = lastId
-                            Destination.Home -> focusHomeId = lastId
-                            else -> Unit
-                        }
-                    },
-                )
             }
             if (searchOpen) {
                 SearchOverlay(
@@ -492,52 +530,26 @@ fun TvShell() {
                     )
                 }
             }
-            browsePc?.let { pc ->
-                RemoteFolderScreen(
-                    link = link,
-                    pc = pc,
-                    onPlay = { queue, index ->
-                        resumePlayback = true
-                        session = PlaySession(queue, index)
-                    },
-                    onDownload = { videos ->
-                        videos.forEach { video ->
-                            val url = video.originUrl ?: video.uri.toString()
-                            downloads.enqueue(video.title, url)
-                        }
-                        notice = "${videos.size} video indirme kuyruğuna alındı"
-                    },
-                    onClose = { browsePc = null },
-                )
-            }
-            if (shareFolders) {
-                ShareFoldersOverlay(
-                    folders = link.sharedFolders.list(),
-                    onAdd = { grantPicker = true },
-                    onRemove = { link.sharedFolders.remove(it) },
-                    onClose = { shareFolders = false },
-                )
-            }
-            if (grantPicker) {
-                FolderBrowser(
-                    onPick = { dir ->
-                        link.sharedFolders.add(dir)
-                        grantPicker = false
-                    },
-                    onDismiss = { grantPicker = false },
-                )
-            }
             hubPc?.let { pc ->
-                DeviceHub(
-                    link = link,
-                    pc = pc,
-                    onBrowsePc = { browsePc = pc },
-                    onShareFolders = { shareFolders = true },
-                    onClose = {
-                        focusDeviceId = pc.id
-                        hubPc = null
+                Box(
+                    Modifier.focusProperties {
+                        if (browsePc != null || shareFolders || grantPicker) {
+                            canFocus = false
+                            onEnter = { FocusRequester.Cancel }
+                        }
                     },
-                )
+                ) {
+                    DeviceHub(
+                        link = link,
+                        pc = pc,
+                        onBrowsePc = { browsePc = pc },
+                        onShareFolders = { shareFolders = true },
+                        onClose = {
+                            focusDeviceId = pc.id
+                            hubPc = null
+                        },
+                    )
+                }
             }
             deviceMenuPc?.let { pc ->
                 val connected = linkUi.isConnected(pc.id)
@@ -568,6 +580,74 @@ fun TvShell() {
                     onDismiss = {
                         focusDeviceId = pc.id
                         deviceMenuPc = null
+                    },
+                )
+            }
+            browsePc?.let { pc ->
+                RemoteFolderScreen(
+                    link = link,
+                    pc = pc,
+                    onPlay = { queue, index ->
+                        resumePlayback = true
+                        promptResume = true
+                        session = PlaySession(queue, index)
+                    },
+                    watch = library.watch,
+                    interactive = playing == null,
+                    onDownload = { videos ->
+                        videos.forEach { video ->
+                            val url = video.originUrl ?: video.uri.toString()
+                            downloads.enqueue(video.title, url)
+                        }
+                        notice = "${videos.size} video indirme kuyruğuna alındı"
+                    },
+                    onAddPlaylist = { path, title ->
+                        playlists.add(pc.id, path, title)
+                        notice = "Oynatma listesine eklendi"
+                    },
+                    onClose = { browsePc = null },
+                )
+            }
+            if (shareFolders) {
+                ShareFoldersOverlay(
+                    folders = link.sharedFolders.list(),
+                    onAdd = { grantPicker = true },
+                    onRemove = { link.sharedFolders.remove(it) },
+                    onClose = { shareFolders = false },
+                )
+            }
+            if (grantPicker) {
+                FolderBrowser(
+                    onPick = { dir ->
+                        link.sharedFolders.add(dir)
+                        grantPicker = false
+                    },
+                    onDismiss = { grantPicker = false },
+                )
+            }
+            if (playing != null) {
+                PlayerScreen(
+                    session = playing,
+                    resume = resumePlayback,
+                    library = library,
+                    settings = settings,
+                    askResume = promptResume,
+                    remotePosition = { item ->
+                        linkUi.remote?.have.orEmpty()
+                            .filter { have ->
+                                com.grokplayer.tv.data.matchesProgress(item, have.key, have.title)
+                            }
+                            .maxOfOrNull { it.positionMs } ?: 0L
+                    },
+                    onClose = { lastId ->
+                        session = null
+                        link.pushProgress(library)
+                        when (destination) {
+                            Destination.Videos -> focusVideoId = lastId
+                            Destination.Streams -> focusStreamId = lastId
+                            Destination.Home -> focusHomeId = lastId
+                            else -> Unit
+                        }
                     },
                 )
             }
@@ -795,7 +875,7 @@ private fun TopChrome(
     val lock = LocalFocusLock.current
     Row(
         modifier = modifier.focusProperties {
-            if (lock.value) {
+            if (lock.locked) {
                 canFocus = false
                 onEnter = { FocusRequester.Cancel }
             }
@@ -812,7 +892,7 @@ private fun TopChrome(
                 .clip(CircleShape)
                 .focusProperties {
                     down = downFocus
-                    if (lock.value) {
+                    if (lock.locked) {
                         canFocus = false
                         onEnter = { FocusRequester.Cancel }
                     }

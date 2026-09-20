@@ -9,7 +9,9 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -50,7 +52,9 @@ import com.grokplayer.tv.data.LibraryVideo
 import com.grokplayer.tv.data.StorageSource
 import com.grokplayer.tv.data.VideoSort
 import com.grokplayer.tv.data.formatClock
+import com.grokplayer.tv.data.isVod
 import com.grokplayer.tv.data.link.RemoteState
+import com.grokplayer.tv.ui.lists.VideoMenuHost
 import com.grokplayer.tv.ui.components.EmptyState
 import com.grokplayer.tv.ui.components.FilterChip
 import com.grokplayer.tv.ui.components.FocusableAction
@@ -67,7 +71,6 @@ import com.grokplayer.tv.ui.theme.GrokWhite
 import com.grokplayer.tv.ui.theme.GrokYellow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 private enum class VideoFilter { All, Internal, Usb }
 
@@ -76,10 +79,13 @@ fun VideosScreen(
     firstFocus: FocusRequester,
     railFocus: FocusRequester,
     library: LibraryStore,
-    onPlay: (List<LibraryVideo>, Int, Boolean) -> Unit,
+    onPlay: (List<LibraryVideo>, Int, Boolean, Boolean) -> Unit,
     onSend: (LibraryVideo) -> Unit = {},
     canSend: Boolean = false,
     remote: RemoteState? = null,
+    playlists: com.grokplayer.tv.data.PlaylistStore? = null,
+    collections: com.grokplayer.tv.data.CollectionStore? = null,
+    onNotice: (String) -> Unit = {},
     focusVideoId: String? = null,
     onFocusConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -91,19 +97,17 @@ fun VideosScreen(
     var sortOpen by remember { mutableStateOf(false) }
     var folderOpen by remember { mutableStateOf(false) }
     var optionsFor by remember { mutableStateOf<LibraryVideo?>(null) }
-    var detailsFor by remember { mutableStateOf<LibraryVideo?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var pendingGridFocus by remember { mutableStateOf(false) }
     var restoreAfterModal by remember { mutableStateOf(false) }
     var restoreVideoId by rememberSaveable { mutableStateOf<String?>(null) }
-    var pinFocus by remember { mutableStateOf(false) }
     val addFolderFocus = remember { FocusRequester() }
     val sortFocus = remember { FocusRequester() }
     val filterFocus = remember { List(3) { FocusRequester() } }
     val firstVideoFocus = remember { FocusRequester() }
     val tileById = remember { mutableMapOf<String, FocusRequester>() }
     fun tileRequester(id: String) = tileById.getOrPut(id) { FocusRequester() }
-    fun overlayOpen() = optionsFor != null || detailsFor != null || sortOpen || folderOpen
+    fun overlayOpen() = optionsFor != null || sortOpen || folderOpen
     val gridState = rememberLazyGridState()
     var savedScrollIndex by remember { mutableStateOf(0) }
     var savedScrollOffset by remember { mutableStateOf(0) }
@@ -132,18 +136,15 @@ fun VideosScreen(
             )
     }
     fun pinVideo(video: LibraryVideo, index: Int) {
-        pinFocus = true
         restoreVideoId = video.id
         lastFocusedIndex = index
         savedScrollIndex = gridState.firstVisibleItemIndex
         savedScrollOffset = gridState.firstVisibleItemScrollOffset
     }
     fun closeOverlays() {
-        pinFocus = true
         if (restoreVideoId == null) {
             restoreVideoId = videos.getOrNull(lastFocusedIndex)?.id
         }
-        detailsFor = null
         optionsFor = null
         sortOpen = false
         restoreAfterModal = true
@@ -153,11 +154,10 @@ fun VideosScreen(
         closeOverlays()
         return true
     }
-    InterceptBack(enabled = sortOpen || optionsFor != null || detailsFor != null) { dismissOverlay() }
-    BackHandler(enabled = sortOpen || optionsFor != null || detailsFor != null) { dismissOverlay() }
+    InterceptBack(enabled = overlayOpen()) { dismissOverlay() }
+    BackHandler(enabled = overlayOpen()) { dismissOverlay() }
 
     val sources = library.videos.map { it.source }.toSet().size
-    val tileFocus = remember(videos.size) { List(videos.size.coerceAtLeast(1)) { FocusRequester() } }
 
     LaunchedEffect(pendingGridFocus, videos) {
         if (pendingGridFocus && videos.isNotEmpty()) {
@@ -175,15 +175,31 @@ fun VideosScreen(
         runCatching { gridState.scrollToItem(savedScrollIndex, savedScrollOffset) }
     }
 
-    LaunchedEffect(restoreAfterModal, restoreVideoId) {
-        if (!restoreAfterModal) return@LaunchedEffect
+    LaunchedEffect(restoreAfterModal, restoreVideoId, overlayOpen()) {
+        if (!restoreAfterModal || overlayOpen()) return@LaunchedEffect
         if (videos.isEmpty()) {
             runCatching { addFolderFocus.requestFocus() }
             restoreAfterModal = false
-            pinFocus = false
             return@LaunchedEffect
         }
         restoreSavedScroll()
+        delay(32)
+        val id = com.grokplayer.tv.data.OverlayRestore.targetId(
+            overlayOpen = false,
+            remembered = restoreVideoId ?: videos.getOrNull(lastFocusedIndex)?.id,
+            ids = videos.map { it.id },
+        )
+        val index = videos.indexOfFirst { it.id == id }.let { if (it < 0) lastFocusedIndex else it }
+        val requester = tileById[videos.getOrNull(index)?.id] ?: firstVideoFocus
+        repeat(2) {
+            if (runCatching { requester.requestFocus() }.getOrDefault(false)) {
+                lastFocusedIndex = index.coerceIn(0, videos.lastIndex)
+                restoreAfterModal = false
+                return@LaunchedEffect
+            }
+            delay(40)
+        }
+        restoreAfterModal = false
     }
 
     LaunchedEffect(focusVideoId, videos) {
@@ -192,9 +208,9 @@ fun VideosScreen(
         if (index < 0) return@LaunchedEffect
         gridState.scrollToItem(savedScrollIndex, savedScrollOffset)
         delay(32)
-        val requester = if (index == 0) firstVideoFocus else tileFocus.getOrNull(index)
-        repeat(3) {
-            runCatching { requester?.requestFocus() }
+        val requester = tileById[videos[index].id] ?: firstVideoFocus
+        repeat(2) {
+            runCatching { requester.requestFocus() }
             delay(40)
         }
         gridState.scrollToItem(savedScrollIndex, savedScrollOffset)
@@ -230,7 +246,7 @@ fun VideosScreen(
                 .fillMaxSize()
                 .padding(start = 28.dp, end = 28.dp, top = 18.dp, bottom = 10.dp)
                 .focusProperties {
-                    if (optionsFor != null || sortOpen || folderOpen || detailsFor != null) {
+                    if (overlayOpen()) {
                         canFocus = false
                         onEnter = { FocusRequester.Cancel }
                     }
@@ -260,7 +276,10 @@ fun VideosScreen(
                     OutlineButton(
                         label = stringResource(R.string.add_folder),
                         icon = Icons.Outlined.CreateNewFolder,
-                        onClick = { folderOpen = true },
+                        onClick = {
+                            com.grokplayer.tv.data.KeyGate.arm()
+                            folderOpen = true
+                        },
                         modifier = Modifier
                             .then(
                                 if (scanFinished && videos.isEmpty()) {
@@ -279,7 +298,10 @@ fun VideosScreen(
                     OutlineButton(
                         label = stringResource(sort.labelRes),
                         icon = Icons.AutoMirrored.Outlined.Sort,
-                        onClick = { sortOpen = true },
+                        onClick = {
+                            com.grokplayer.tv.data.KeyGate.arm()
+                            sortOpen = true
+                        },
                         modifier = Modifier
                             .focusRequester(sortFocus)
                             .focusProperties {
@@ -356,37 +378,21 @@ fun VideosScreen(
                     body = stringResource(R.string.empty_videos_body),
                 )
             } else {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
-                    state = gridState,
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.weight(1f),
-                ) {
+                BoxWithConstraints(Modifier.weight(1f)) {
+                    val tileReserve = (maxWidth - 14.dp * 2) / 3 * 9f / 16f + 52.dp
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        state = gridState,
+                        contentPadding = PaddingValues(bottom = tileReserve),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
                     itemsIndexed(videos, key = { _, item -> item.id }) { index, video ->
-                        if (restoreAfterModal && video.id == restoreVideoId) {
-                            LaunchedEffect(video.id, restoreAfterModal) {
-                                restoreSavedScroll()
-                                repeat(16) {
-                                    val ok = runCatching { tileRequester(video.id).requestFocus() }.getOrDefault(false)
-                                    restoreSavedScroll()
-                                    if (ok) {
-                                        lastFocusedIndex = index
-                                        restoreAfterModal = false
-                                        delay(16)
-                                        restoreSavedScroll()
-                                        pinFocus = false
-                                        return@LaunchedEffect
-                                    }
-                                    delay(50)
-                                }
-                                restoreAfterModal = false
-                                pinFocus = false
-                            }
-                        }
                         VideoTile(
                             video = video,
                             progress = library.progressFraction(video),
+                            enablePreview = !overlayOpen(),
                             onPc = remote?.hasVideo(video.title) == true,
                             pcPlaying = remote?.isCurrent(video.title) == true,
                             pcPaused = remote?.paused == true,
@@ -396,26 +402,27 @@ fun VideosScreen(
                                 )
                                 .focusRequester(tileRequester(video.id))
                                 .onFocusChanged {
-                                    if (it.isFocused && !overlayOpen() && !pinFocus) {
+                                    if (it.isFocused && !overlayOpen() && !restoreAfterModal) {
                                         lastFocusedIndex = index
                                         restoreVideoId = video.id
                                     }
                                 }
                                 .focusProperties {
-                                    if (overlayOpen()) canFocus = false
                                     left = if (index % 3 == 0) railFocus else FocusRequester.Default
                                     up = if (index < 3) filterFocus[0] else FocusRequester.Default
                                 },
                             onClick = {
                                 savedScrollIndex = gridState.firstVisibleItemIndex
                                 savedScrollOffset = gridState.firstVisibleItemScrollOffset
-                                onPlay(videos, index, true)
+                                val (queue, start) = com.grokplayer.tv.data.vodQueue(videos, index)
+                                onPlay(queue, start, true, true)
                             },
                             onLongClick = {
                                 pinVideo(video, index)
                                 optionsFor = video
                             },
                         )
+                    }
                     }
                 }
             }
@@ -463,33 +470,44 @@ fun VideosScreen(
         }
         optionsFor?.let { video ->
             val optionIndex = videos.indexOfFirst { it.id == video.id }.coerceAtLeast(0)
-            VideoOptions(
+            VideoMenuHost(
                 video = video,
-                onDetails = { detailsFor = video },
-                onPlay = {
-                    optionsFor = null
-                    savedScrollIndex = gridState.firstVisibleItemIndex
-                    savedScrollOffset = gridState.firstVisibleItemScrollOffset
-                    onPlay(videos, optionIndex, true)
-                },
-                onPlayFromStart = {
-                    optionsFor = null
-                    savedScrollIndex = gridState.firstVisibleItemIndex
-                    savedScrollOffset = gridState.firstVisibleItemScrollOffset
-                    onPlay(videos, optionIndex, false)
-                },
-                canSend = canSend,
-                onSend = {
-                    optionsFor = null
-                    onSend(video)
-                },
+                meta = "${video.durationMs.formatClock()} · ${video.format} · ${video.sourceLabel}",
+                playlists = playlists,
+                collections = collections,
+                onNotice = onNotice,
+                watch = library.watch,
                 onDismiss = { closeOverlays() },
-            )
-        }
-        detailsFor?.let { video ->
-            VideoDetailsSheet(
-                video = video,
-                onDismiss = { closeOverlays() },
+                extraActions = buildList {
+                    add(
+                        com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.resume)) {
+                            optionsFor = null
+                            savedScrollIndex = gridState.firstVisibleItemIndex
+                            savedScrollOffset = gridState.firstVisibleItemScrollOffset
+                            val (queue, start) = com.grokplayer.tv.data.vodQueue(videos, optionIndex)
+                            onPlay(queue, start, true, false)
+                        },
+                    )
+                    add(
+                        com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.play_from_start)) {
+                            optionsFor = null
+                            savedScrollIndex = gridState.firstVisibleItemIndex
+                            savedScrollOffset = gridState.firstVisibleItemScrollOffset
+                            val (queue, start) = com.grokplayer.tv.data.vodQueue(videos, optionIndex)
+                            onPlay(queue, start, false, false)
+                        },
+                    )
+                },
+                trailingActions = buildList {
+                    if (canSend) {
+                        add(
+                            com.grokplayer.tv.ui.components.ModalAction("PC’ye gönder") {
+                                optionsFor = null
+                                onSend(video)
+                            },
+                        )
+                    }
+                },
             )
         }
         notice?.let { message ->
@@ -514,6 +532,7 @@ private fun VideoTile(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enablePreview: Boolean = true,
     onPc: Boolean = false,
     pcPlaying: Boolean = false,
     pcPaused: Boolean = false,
@@ -532,6 +551,13 @@ private fun VideoTile(
                 progress = progress,
                 path = video.path,
                 format = video.format,
+                posterUrl = video.posterUrl,
+                durationMs = video.durationMs,
+                isLive = video.isLive,
+                enablePreview = enablePreview,
+                originUrl = video.originUrl,
+                referer = video.referer,
+                userAgent = video.userAgent,
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f),
@@ -567,30 +593,6 @@ private fun VideoTile(
             )
         }
     }
-}
-
-@Composable
-private fun VideoOptions(
-    video: LibraryVideo,
-    onPlay: () -> Unit,
-    onPlayFromStart: () -> Unit,
-    onDetails: () -> Unit,
-    onSend: () -> Unit,
-    canSend: Boolean,
-    onDismiss: () -> Unit,
-) {
-    com.grokplayer.tv.ui.components.ModalMenu(
-        title = video.title,
-        meta = "${video.durationMs.formatClock()} · ${video.format} · ${video.sourceLabel}",
-        onDismiss = onDismiss,
-        actions = buildList {
-            add(com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.resume), onPlay))
-            add(com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.play_from_start), onPlayFromStart))
-            add(com.grokplayer.tv.ui.components.ModalAction("Ayrıntılar", onDetails))
-            if (canSend) add(com.grokplayer.tv.ui.components.ModalAction("PC’ye gönder", onSend))
-            add(com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.close), onDismiss))
-        },
-    )
 }
 
 @Composable
@@ -654,89 +656,16 @@ private fun SortMenu(
                             },
                             RoundedCornerShape(6.dp),
                         )
-                        .clickable(interactionSource = interaction, indication = null) { onSelect(option) }
+                        .clickable(interactionSource = interaction, indication = null) {
+                            com.grokplayer.tv.data.KeyGate.arm()
+                            onSelect(option)
+                        }
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                 )
             }
         }
     }
     LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
-}
-
-@Composable
-private fun VideoDetailsSheet(video: LibraryVideo, onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    var details by remember { mutableStateOf<com.grokplayer.tv.data.MediaDetails?>(null) }
-    LaunchedEffect(video.id) {
-        details = withContext(kotlinx.coroutines.Dispatchers.IO) {
-            com.grokplayer.tv.data.MediaProbe.details(context, video.uri, video.path)
-        }
-    }
-    val close = remember { FocusRequester() }
-    com.grokplayer.tv.ui.theme.RememberFocusLock()
-    InterceptBack { onDismiss(); true }
-    BackHandler(onBack = onDismiss)
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(GrokInk.copy(alpha = 0.55f))
-                .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }, onClick = onDismiss)
-                .focusProperties {
-                    canFocus = false
-                    onEnter = { FocusRequester.Cancel }
-                },
-        )
-        Column(
-            Modifier
-                .width(420.dp)
-                .background(GrokSurface, RoundedCornerShape(12.dp))
-                .border(1.dp, GrokYellow.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
-                .padding(18.dp),
-        ) {
-            Text(video.title, style = GrokType.section, color = GrokWhite)
-            Text(
-                "${video.format} · ${video.sourceLabel}",
-                style = GrokType.cardMeta,
-                color = GrokMuted,
-                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
-            )
-            val duration = (details?.durationMs?.takeIf { it > 0L } ?: video.durationMs)
-            DetailRow("Süre", if (duration > 0L) duration.formatClock() else "—")
-            DetailRow("Çözünürlük", details?.resolution ?: "…")
-            DetailRow("Kare hızı", details?.fpsLabel ?: "…")
-            video.path?.let { DetailRow("Dosya", it.substringAfterLast('/')) }
-            Spacer(Modifier.padding(top = 8.dp))
-            com.grokplayer.tv.ui.components.FocusableAction(
-                onClick = onDismiss,
-                modifier = Modifier.focusRequester(close),
-            ) { focused ->
-                Text(
-                    stringResource(R.string.close),
-                    style = GrokType.button,
-                    color = if (focused) GrokInk else GrokWhite,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(if (focused) GrokYellow else GrokSurface, RoundedCornerShape(6.dp))
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                )
-            }
-        }
-    }
-    LaunchedEffect(Unit) { runCatching { close.requestFocus() } }
-}
-
-@Composable
-private fun DetailRow(label: String, value: String) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(label, style = GrokType.cardMeta, color = GrokMuted)
-        Text(value, style = GrokType.cardTitle, color = GrokWhite, modifier = Modifier.padding(start = 16.dp))
-    }
 }
 
 private val VideoSort.labelRes: Int

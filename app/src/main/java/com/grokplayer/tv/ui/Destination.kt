@@ -2,6 +2,7 @@ package com.grokplayer.tv.ui
 
 import androidx.annotation.StringRes
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.CellTower
@@ -16,6 +17,7 @@ enum class Destination(
 ) {
     Home(R.string.nav_home, Icons.Outlined.Home),
     Videos(R.string.nav_videos, Icons.Outlined.VideoLibrary),
+    Lists(R.string.nav_lists, Icons.AutoMirrored.Outlined.PlaylistPlay),
     Streams(R.string.nav_streams, Icons.Outlined.CellTower),
     Downloads(R.string.nav_downloads, Icons.Outlined.Download),
     Settings(R.string.nav_settings, Icons.Outlined.Settings),

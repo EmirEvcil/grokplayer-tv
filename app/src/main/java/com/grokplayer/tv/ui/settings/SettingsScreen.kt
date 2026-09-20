@@ -290,7 +290,7 @@ private fun CategoryDetails(
     when (category) {
         SettingsCategory.Playback -> {
             ToggleRow("Kaldığın yerden devam et", "Videoları bıraktığın noktadan aç.", settings.resumeEnabled, { settings.toggleResume() }, row("resume", true))
-            ToggleRow("Sonraki videoyu otomatik oynat", null, settings.autoNext, { settings.toggleAutoNext() }, row("autonext"))
+            ToggleRow("Sonraki videoyu otomatik oynat", "Bitmeden 10 saniye önce sıradakini gösterir ve liste sonunda durur.", settings.autoNext, { settings.toggleAutoNext() }, row("autonext"))
             ValueRow("İleri / geri sarma adımı", settings.seekStepLabel, { settings.cycleSeekStep() }, row("seek"))
             ValueRow("Varsayılan oynatma hızı", settings.speedLabel, { settings.cycleSpeed() }, row("speed"))
             ValueRow("Kontrolleri gizleme süresi", settings.hideControlsLabel, { settings.cycleHideControls() }, row("hide"))

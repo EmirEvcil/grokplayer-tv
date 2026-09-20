@@ -14,6 +14,9 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 import java.io.OutputStream
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -34,6 +37,7 @@ object StreamHttp {
             ssl.init(null, arrayOf(trust), null)
             val built = OkHttpClient.Builder()
                 .sslSocketFactory(ssl.socketFactory, trust)
+                .cookieJar(HostCookieJar)
                 .followRedirects(true)
                 .followSslRedirects(true)
                 .connectTimeout(20, TimeUnit.SECONDS)
@@ -47,6 +51,45 @@ object StreamHttp {
     @OptIn(UnstableApi::class)
     fun dataSourceFactory(context: Context): OkHttpDataSource.Factory =
         OkHttpDataSource.Factory(client(context)).setUserAgent(StreamProbe.USER_AGENT)
+
+    @OptIn(UnstableApi::class)
+    fun playerDataSourceFactory(context: Context): OkHttpDataSource.Factory {
+        val play = client(context).newBuilder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .writeTimeout(0, TimeUnit.MILLISECONDS)
+            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
+        return applyPlayHeaders(
+            OkHttpDataSource.Factory(play),
+            referer = null,
+            userAgent = StreamProbe.USER_AGENT,
+        )
+    }
+
+    @OptIn(UnstableApi::class)
+    fun applyPlayHeaders(
+        factory: OkHttpDataSource.Factory,
+        referer: String?,
+        userAgent: String?,
+    ): OkHttpDataSource.Factory {
+        factory.setUserAgent(userAgent?.takeIf { it.isNotBlank() } ?: StreamProbe.USER_AGENT)
+        val ref = referer?.takeIf { it.isNotBlank() }
+        val headers = if (ref == null) {
+            emptyMap()
+        } else {
+            val origin = runCatching {
+                val uri = android.net.Uri.parse(ref)
+                if (uri.scheme != null && uri.host != null) "${uri.scheme}://${uri.host}" else null
+            }.getOrNull()
+            buildMap {
+                put("Referer", ref)
+                if (origin != null) put("Origin", origin)
+            }
+        }
+        return factory.setDefaultRequestProperties(headers)
+    }
 
     fun readBytes(url: String): ByteArray {
         request(url).use { resp ->
@@ -122,5 +165,36 @@ object StreamHttp {
         val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
         tmf.init(null as KeyStore?)
         return tmf.trustManagers.filterIsInstance<X509TrustManager>().first()
+    }
+
+    private object HostCookieJar : CookieJar {
+        private val lock = Any()
+        private val store = LinkedHashMap<String, MutableMap<String, Cookie>>()
+
+        init {
+            val youtube = HttpUrl.Builder().scheme("https").host("www.youtube.com").build()
+            val seed = listOf(
+                Cookie.Builder().domain("youtube.com").name("CONSENT").value("YES+").build(),
+                Cookie.Builder().domain("youtube.com").name("SOCS").value("CAI").build(),
+            )
+            saveFromResponse(youtube, seed)
+        }
+
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            synchronized(lock) {
+                val host = url.topPrivateDomain() ?: url.host
+                val map = store.getOrPut(host) { mutableMapOf() }
+                cookies.forEach { map[it.name] = it }
+                android.util.Log.i("GrokPlayer", "cookies $host +${cookies.size} total=${map.size}")
+            }
+        }
+
+        override fun loadForRequest(url: HttpUrl): List<Cookie> {
+            synchronized(lock) {
+                val host = url.topPrivateDomain() ?: url.host
+                val now = System.currentTimeMillis()
+                return store[host]?.values?.filter { it.expiresAt >= now }.orEmpty()
+            }
+        }
     }
 }

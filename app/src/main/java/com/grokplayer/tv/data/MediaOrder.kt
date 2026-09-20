@@ -31,6 +31,34 @@ object MediaOrder {
     fun <T> sortByTitle(items: List<T>, titleOf: (T) -> String): List<T> =
         items.sortedWith { a, b -> compare(titleOf(a), titleOf(b)) }
 
+    fun collectionStem(name: String): String? {
+        val parsed = key(name)
+        if (parsed.series.isBlank()) return null
+        if (parsed.episode > 0 || parsed.season > 0 || parsed.film > 0) return parsed.series
+        return null
+    }
+
+    fun normalizeTitle(name: String): String {
+        return name.substringAfterLast('/', name.substringAfterLast('\\'))
+            .substringBeforeLast('.')
+            .replace('_', ' ')
+            .replace('.', ' ')
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .lowercase()
+    }
+
+    fun prettyTitle(stem: String): String {
+        return stem.replace('_', ' ')
+            .replace('.', ' ')
+            .split(Regex("\\s+"))
+            .filter { it.isNotBlank() }
+            .joinToString(" ") { part ->
+                part.replaceFirstChar { ch -> if (ch.isLowerCase()) ch.titlecase() else ch.toString() }
+            }
+            .ifBlank { stem }
+    }
+
     internal fun key(name: String): SortKey {
         val stem = name.substringAfterLast('/', name.substringAfterLast('\\'))
             .substringBeforeLast('.')

@@ -632,16 +632,19 @@ fun PcResumeOverlay(
     offer: ResumeOffer,
     onContinue: () -> Unit,
     onStartOver: () -> Unit,
+    onDismiss: () -> Unit = onStartOver,
 ) {
     val first = remember { FocusRequester() }
     Dialog(
-        onDismissRequest = onStartOver,
+        onDismissRequest = onDismiss,
         properties = DialogProperties(
-            dismissOnBackPress = false,
+            dismissOnBackPress = true,
             dismissOnClickOutside = false,
             usePlatformDefaultWidth = false,
         ),
     ) {
+        BackHandler(onBack = onDismiss)
+        InterceptBack { onDismiss(); true }
         Column(
             Modifier
                 .width(460.dp)

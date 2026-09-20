@@ -25,6 +25,9 @@ data class LibraryVideo(
     val isLive: Boolean = false,
     val isStream: Boolean = false,
     val originUrl: String? = null,
+    val posterUrl: String? = null,
+    val referer: String? = null,
+    val userAgent: String? = null,
 ) {
     val progress: Float?
         get() = null
@@ -49,6 +52,33 @@ fun LibraryVideo.fileKey(): String? {
     return remote?.substringBefore('?')?.lowercase()
 }
 
+fun progressTitlesMatch(left: String, right: String): Boolean {
+    val a = left.trim().lowercase()
+    val b = right.trim().lowercase()
+    if (a.isEmpty() || b.isEmpty()) return false
+    if (a == b) return true
+    return inboxTitleAlias(a, b) || inboxTitleAlias(b, a)
+}
+
+private fun inboxTitleAlias(base: String, candidate: String): Boolean {
+    if (!candidate.startsWith(base) || candidate.length == base.length) return false
+    val rest = candidate.substring(base.length)
+    if (!rest.startsWith("-") && !rest.startsWith(" ")) return false
+    val suffix = rest.drop(1)
+    return suffix.matches(Regex("[0-9a-f]{6,}")) || suffix.matches(Regex("\\d{10,}"))
+}
+
+fun matchesProgress(video: LibraryVideo, key: String, title: String? = null): Boolean {
+    if (key.isBlank() && title.isNullOrBlank()) return false
+    val fileKey = video.fileKey()
+    if (key.isNotBlank()) {
+        if (fileKey != null && key.equals(fileKey, ignoreCase = true)) return true
+        if (key.equals("title|${video.title.trim().lowercase()}", ignoreCase = true)) return true
+    }
+    if (!title.isNullOrBlank() && progressTitlesMatch(video.title, title)) return true
+    return false
+}
+
 internal fun sameOpened(a: LibraryVideo, b: LibraryVideo): Boolean {
     if (a.id == b.id) return true
     val pathA = a.path?.let { LibraryStore.normalizePath(it) }
@@ -69,7 +99,23 @@ private fun originKey(video: LibraryVideo): String? {
 data class PlaySession(
     val queue: List<LibraryVideo>,
     val startIndex: Int,
+    val listId: String? = null,
 )
+
+fun LibraryVideo.isVod(): Boolean = !isLive && !format.equals("CANLI", true)
+
+fun vodQueue(videos: List<LibraryVideo>, startIndex: Int): Pair<List<LibraryVideo>, Int> {
+    val start = videos.getOrNull(startIndex) ?: return emptyList<LibraryVideo>() to 0
+    if (!start.isVod()) return listOf(start) to 0
+    val queue = videos.filter { it.isVod() }
+    val index = queue.indexOfFirst { it.id == start.id }.let { if (it < 0) 0 else it }
+    return queue to index
+}
+
+fun vodQueue(videos: List<LibraryVideo>, startId: String): Pair<List<LibraryVideo>, Int> {
+    val index = videos.indexOfFirst { it.id == startId }.coerceAtLeast(0)
+    return vodQueue(videos, index)
+}
 
 fun Long.formatClock(): String {
     val total = (this / 1000).coerceAtLeast(0)

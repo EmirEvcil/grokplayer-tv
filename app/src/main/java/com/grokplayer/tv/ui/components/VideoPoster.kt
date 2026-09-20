@@ -7,10 +7,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -21,14 +23,20 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.grokplayer.tv.data.MediaProbe
 import com.grokplayer.tv.data.ThumbnailCache
+import com.grokplayer.tv.data.formatClock
+import com.grokplayer.tv.data.scan.YouTubeResolver
+import com.grokplayer.tv.ui.theme.GrokInk
 import com.grokplayer.tv.ui.theme.GrokMuted
 import com.grokplayer.tv.ui.theme.GrokPink
 import com.grokplayer.tv.ui.theme.GrokSurface
 import com.grokplayer.tv.ui.theme.GrokType
+import com.grokplayer.tv.ui.theme.GrokWhite
 import com.grokplayer.tv.ui.theme.GrokYellow
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -45,8 +53,15 @@ fun VideoPoster(
     progress: Float? = null,
     path: String? = null,
     format: String? = null,
+    posterUrl: String? = null,
     timeMs: Long = 1_000L,
     maxWidth: Int = ThumbnailCache.TILE_WIDTH,
+    durationMs: Long = 0L,
+    isLive: Boolean = false,
+    enablePreview: Boolean = false,
+    originUrl: String? = null,
+    referer: String? = null,
+    userAgent: String? = null,
     overlay: @Composable (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
@@ -54,16 +69,24 @@ fun VideoPoster(
     val cacheKey = path ?: uri.toString()
     var poster by remember(cacheKey, maxWidth) { mutableStateOf<File?>(null) }
     var failed by remember(cacheKey, maxWidth) { mutableStateOf(false) }
+    var duration by remember(cacheKey) { mutableLongStateOf(durationMs) }
+    var preview by remember { mutableStateOf(false) }
+    val artwork = posterUrl?.takeIf { it.startsWith("http") }
 
-    LaunchedEffect(cacheKey, maxWidth, timeMs) {
+    LaunchedEffect(cacheKey, maxWidth, timeMs, artwork) {
+        if (artwork != null) return@LaunchedEffect
         var attempt = 0
         while (isActive && poster == null) {
-            while (ThumbnailCache.playbackActive && isActive) delay(400)
             val cached = withContext(Dispatchers.IO) { ThumbnailCache.existing(context, cacheKey, maxWidth) }
             if (cached != null) {
                 poster = cached
                 failed = false
                 return@LaunchedEffect
+            }
+            if (ThumbnailCache.playbackActive) {
+                attempt++
+                delay(400)
+                continue
             }
             val extracted = withContext(Dispatchers.IO) {
                 ThumbnailCache.extract(context, cacheKey, uri, path, timeMs = timeMs, maxWidth = maxWidth)
@@ -79,16 +102,36 @@ fun VideoPoster(
         failed = poster == null
     }
 
+    LaunchedEffect(cacheKey, durationMs, isLive) {
+        if (durationMs > 0L) {
+            duration = durationMs
+            return@LaunchedEffect
+        }
+        if (isLive) return@LaunchedEffect
+        val raw = uri.toString()
+        if (YouTubeResolver.videoId(raw) != null || YouTubeResolver.videoId(originUrl.orEmpty()) != null) {
+            return@LaunchedEffect
+        }
+        duration = withContext(Dispatchers.IO) { MediaProbe.durationMs(context, uri, path) }
+    }
+
+    LaunchedEffect(focused, enablePreview, cacheKey) {
+        preview = false
+        if (!focused || !enablePreview) return@LaunchedEffect
+        delay(500)
+        preview = true
+    }
+
     Box(
         modifier
             .clip(shape)
             .background(GrokSurface)
             .then(if (focused) Modifier.border(2.dp, GrokYellow, shape) else Modifier),
     ) {
-        if (poster != null) {
+        if (artwork != null || poster != null) {
             AsyncImage(
                 model = ImageRequest.Builder(context)
-                    .data(poster)
+                    .data(artwork ?: poster)
                     .crossfade(false)
                     .build(),
                 contentDescription = title,
@@ -98,7 +141,7 @@ fun VideoPoster(
                 onError = { failed = true },
             )
         }
-        if (failed || poster == null) {
+        if (artwork == null && (failed || poster == null)) {
             Text(
                 text = format?.ifBlank { null } ?: title.take(1).uppercase().ifBlank { "V" },
                 style = GrokType.section,
@@ -106,8 +149,42 @@ fun VideoPoster(
                 modifier = Modifier.align(Alignment.Center),
             )
         }
+        if (preview) {
+            CardPreview(
+                uri = uri,
+                originUrl = originUrl,
+                isLive = isLive,
+                format = format,
+                referer = referer,
+                userAgent = userAgent,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
         overlay?.invoke()
-        if (progress != null) {
+        if (isLive) {
+            Text(
+                "CANLI",
+                style = GrokType.cardMeta,
+                color = GrokWhite,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(8.dp)
+                    .background(GrokPink, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        } else if (duration > 0L) {
+            Text(
+                duration.formatClock(),
+                style = GrokType.cardMeta,
+                color = GrokWhite,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(8.dp)
+                    .background(GrokInk.copy(alpha = 0.72f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
+        if (progress != null && !isLive) {
             Box(
                 Modifier
                     .align(Alignment.BottomStart)
@@ -120,7 +197,8 @@ fun VideoPoster(
                     .align(Alignment.BottomStart)
                     .fillMaxWidth(progress.coerceIn(0.08f, 1f))
                     .height(3.dp)
-                    .background(GrokPink),
+                    .background(GrokPink)
+                    .testTag("watch-progress"),
             )
         }
     }

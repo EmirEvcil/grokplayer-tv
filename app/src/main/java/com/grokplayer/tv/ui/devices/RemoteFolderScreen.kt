@@ -40,6 +40,7 @@ import com.grokplayer.tv.ui.theme.GrokWhite
 import com.grokplayer.tv.ui.theme.GrokYellow
 import com.grokplayer.tv.ui.theme.InterceptBack
 import com.grokplayer.tv.ui.theme.RememberFocusLock
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -48,7 +49,10 @@ fun RemoteFolderScreen(
     pc: PairedPc,
     onPlay: (List<LibraryVideo>, Int) -> Unit,
     onDownload: (List<LibraryVideo>) -> Unit,
+    onAddPlaylist: (path: String, title: String) -> Unit = { _, _ -> },
     onClose: () -> Unit,
+    watch: com.grokplayer.tv.data.WatchStore? = null,
+    interactive: Boolean = true,
 ) {
     val scope = rememberCoroutineScope()
     var path by remember { mutableStateOf("") }
@@ -56,8 +60,9 @@ fun RemoteFolderScreen(
     var busy by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
     var optionsFor by remember { mutableStateOf<BrowseVideo?>(null) }
+    var folderOptions by remember { mutableStateOf<com.grokplayer.tv.data.BrowseDir?>(null) }
     val first = remember { FocusRequester() }
-    RememberFocusLock()
+    if (interactive) RememberFocusLock()
 
     fun load(next: String) {
         busy = true
@@ -76,18 +81,28 @@ fun RemoteFolderScreen(
             optionsFor = null
             return
         }
+        if (folderOptions != null) {
+            folderOptions = null
+            return
+        }
         val parent = listing?.parent
         if (parent == null || path.isBlank()) onClose() else load(parent)
     }
 
-    InterceptBack { goBack(); true }
-    BackHandler { goBack() }
+    InterceptBack(enabled = interactive) { goBack(); true }
+    BackHandler(enabled = interactive) { goBack() }
 
     Box(
         Modifier
             .fillMaxSize()
             .background(GrokInk)
-            .padding(start = 28.dp, end = 28.dp, top = 22.dp, bottom = 16.dp),
+            .padding(start = 28.dp, end = 28.dp, top = 22.dp, bottom = 16.dp)
+            .focusProperties {
+                if (!interactive) {
+                    canFocus = false
+                    onEnter = { FocusRequester.Cancel }
+                }
+            },
     ) {
         Column(Modifier.fillMaxSize()) {
             Text("PC klasörleri", style = GrokType.pageTitle, color = GrokWhite)
@@ -113,23 +128,18 @@ fun RemoteFolderScreen(
                         meta = "Klasör",
                         modifier = if (index == 0) Modifier.focusRequester(first) else Modifier,
                         onClick = { load(dir.path) },
-                        onLongClick = {
-                            scope.launch {
-                                val inside = link.browse(pc, dir.path) ?: return@launch
-                                val queue = link.videosFrom(pc, inside.videos)
-                                if (queue.isEmpty()) {
-                                    notice = "Bu klasörde video yok"
-                                } else {
-                                    onPlay(queue, 0)
-                                }
-                            }
-                        },
+                        onLongClick = { folderOptions = dir },
                     )
                 }
-                listing?.videos?.forEach { video ->
+                listing?.videos?.forEachIndexed { index, video ->
                     FolderRow(
                         title = video.title,
                         meta = "VOD · oynat",
+                        modifier = if (listing?.dirs.isNullOrEmpty() && index == 0) {
+                            Modifier.focusRequester(first)
+                        } else {
+                            Modifier
+                        },
                         onClick = {
                             val queue = link.videosFrom(pc, listing?.videos.orEmpty())
                             val index = queue.indexOfFirst { it.title == video.title }.coerceAtLeast(0)
@@ -146,33 +156,74 @@ fun RemoteFolderScreen(
                 modifier = Modifier.padding(top = 10.dp),
             )
         }
-        optionsFor?.let { video ->
+        folderOptions?.let { dir ->
             com.grokplayer.tv.ui.components.ModalMenu(
-                title = video.title,
-                meta = "PC’den VOD",
-                onDismiss = { optionsFor = null },
+                title = dir.name,
+                meta = "PC klasörü",
+                onDismiss = { folderOptions = null },
                 actions = listOf(
-                    com.grokplayer.tv.ui.components.ModalAction("Oynat") {
-                        val queue = link.videosFrom(pc, listing?.videos.orEmpty())
-                        val index = queue.indexOfFirst { it.title == video.title }.coerceAtLeast(0)
-                        optionsFor = null
-                        onPlay(queue, index)
+                    com.grokplayer.tv.ui.components.ModalAction("Tümünü oynat") {
+                        folderOptions = null
+                        scope.launch {
+                            val inside = link.browse(pc, dir.path, deep = true) ?: return@launch
+                            val queue = link.videosFrom(pc, inside.videos)
+                            if (queue.isEmpty()) notice = "Bu klasörde video yok" else onPlay(queue, 0)
+                        }
                     },
-                    com.grokplayer.tv.ui.components.ModalAction("İndir") {
-                        onDownload(link.videosFrom(pc, listOf(video)))
-                        optionsFor = null
+                    com.grokplayer.tv.ui.components.ModalAction("Oynatma listesine ekle") {
+                        onAddPlaylist(dir.path, dir.name)
+                        folderOptions = null
                     },
                     com.grokplayer.tv.ui.components.ModalAction("Klasörü indir") {
-                        onDownload(link.videosFrom(pc, listing?.videos.orEmpty()))
-                        optionsFor = null
+                        folderOptions = null
+                        scope.launch {
+                            val inside = link.browse(pc, dir.path, deep = true) ?: return@launch
+                            onDownload(link.videosFrom(pc, inside.videos))
+                        }
                     },
-                    com.grokplayer.tv.ui.components.ModalAction("Kapat") { optionsFor = null },
+                    com.grokplayer.tv.ui.components.ModalAction("Kapat") { folderOptions = null },
                 ),
             )
         }
+        optionsFor?.let { video ->
+            val asVideo = link.videosFrom(pc, listOf(video)).firstOrNull()
+            if (asVideo != null) {
+                com.grokplayer.tv.ui.lists.VideoMenuHost(
+                    video = asVideo,
+                    meta = "PC’den VOD",
+                    showAddToList = false,
+                    watch = watch,
+                    onDismiss = { optionsFor = null },
+                    extraActions = listOf(
+                        com.grokplayer.tv.ui.components.ModalAction("Oynat") {
+                            val queue = link.videosFrom(pc, listing?.videos.orEmpty())
+                            val index = queue.indexOfFirst { it.title == video.title }.coerceAtLeast(0)
+                            optionsFor = null
+                            onPlay(queue, index)
+                        },
+                    ),
+                    trailingActions = listOf(
+                        com.grokplayer.tv.ui.components.ModalAction("İndir") {
+                            onDownload(link.videosFrom(pc, listOf(video)))
+                            optionsFor = null
+                        },
+                        com.grokplayer.tv.ui.components.ModalAction("Klasörü indir") {
+                            onDownload(link.videosFrom(pc, listing?.videos.orEmpty()))
+                            optionsFor = null
+                        },
+                    ),
+                )
+            }
+        }
     }
-    LaunchedEffect(listing?.path) {
-        runCatching { first.requestFocus() }
+    LaunchedEffect(listing?.path, listing?.dirs?.size, listing?.videos?.size, busy, interactive) {
+        if (!interactive || busy || listing == null) return@LaunchedEffect
+        if (listing?.dirs.isNullOrEmpty() && listing?.videos.isNullOrEmpty()) return@LaunchedEffect
+        repeat(16) {
+            val ok = runCatching { first.requestFocus() }.getOrDefault(false)
+            if (ok) return@LaunchedEffect
+            delay(40)
+        }
     }
 }
 

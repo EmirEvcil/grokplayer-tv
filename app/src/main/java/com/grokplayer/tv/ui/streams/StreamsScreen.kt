@@ -18,13 +18,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -52,6 +54,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.grokplayer.tv.R
@@ -60,6 +63,7 @@ import com.grokplayer.tv.data.StreamItem
 import com.grokplayer.tv.data.StreamKind
 import com.grokplayer.tv.data.StreamProbe
 import com.grokplayer.tv.data.StreamStore
+import com.grokplayer.tv.data.formatClock
 import com.grokplayer.tv.ui.components.EmptyState
 import com.grokplayer.tv.ui.components.FilterChip
 import com.grokplayer.tv.ui.components.FocusableAction
@@ -99,13 +103,28 @@ fun StreamsScreen(
     onSend: (LibraryVideo) -> Unit = {},
     focusStreamId: String? = null,
     onFocusConsumed: () -> Unit = {},
+    initialScanUrl: String? = null,
+    onScanConsumed: () -> Unit = {},
+    playlists: com.grokplayer.tv.data.PlaylistStore? = null,
+    collections: com.grokplayer.tv.data.CollectionStore? = null,
+    watch: com.grokplayer.tv.data.WatchStore? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var filter by remember { mutableStateOf(StreamFilter.All) }
     var addOpen by remember { mutableStateOf(false) }
+    var seedUrl by remember { mutableStateOf(initialScanUrl) }
+    LaunchedEffect(initialScanUrl) {
+        val seed = initialScanUrl?.trim().orEmpty()
+        if (seed.isBlank()) return@LaunchedEffect
+        seedUrl = seed
+        addOpen = true
+        onScanConsumed()
+    }
     var optionsFor by remember { mutableStateOf<StreamItem?>(null) }
+    var restoreAfterModal by remember { mutableStateOf(false) }
+    var restoreStreamId by rememberSaveable { mutableStateOf<String?>(null) }
     val addFocus = remember { FocusRequester() }
     val firstTile = remember { FocusRequester() }
     val filterFocus = remember { List(4) { FocusRequester() } }
@@ -119,6 +138,7 @@ fun StreamsScreen(
         return when {
             optionsFor != null -> {
                 optionsFor = null
+                restoreAfterModal = true
                 true
             }
             addOpen -> {
@@ -139,6 +159,32 @@ fun StreamsScreen(
                 StreamFilter.Favorites -> it.favorite
             }
         }
+    }
+
+    LaunchedEffect(restoreAfterModal, restoreStreamId, lastFocusedIndex, visible.size, optionsFor, addOpen) {
+        val overlay = optionsFor != null || addOpen
+        if (!restoreAfterModal || overlay) return@LaunchedEffect
+        if (visible.isEmpty()) {
+            restoreAfterModal = false
+            return@LaunchedEffect
+        }
+        kotlinx.coroutines.delay(32)
+        val id = com.grokplayer.tv.data.OverlayRestore.targetId(
+            overlayOpen = false,
+            remembered = restoreStreamId ?: visible.getOrNull(lastFocusedIndex)?.id,
+            ids = visible.map { it.id },
+        )
+        val index = visible.indexOfFirst { it.id == id }.let { if (it < 0) lastFocusedIndex.coerceIn(0, visible.lastIndex) else it }
+        val requester = if (index == 0) firstTile else tileFocus.getOrNull(index)
+        repeat(2) {
+            if (runCatching { requester?.requestFocus() }.getOrDefault(false) == true) {
+                lastFocusedIndex = index
+                restoreAfterModal = false
+                return@LaunchedEffect
+            }
+            kotlinx.coroutines.delay(40)
+        }
+        restoreAfterModal = false
     }
 
     LaunchedEffect(focusStreamId, visible) {
@@ -189,7 +235,10 @@ fun StreamsScreen(
                 OutlineButton(
                     label = stringResource(R.string.add_stream),
                     icon = Icons.Outlined.Add,
-                    onClick = { addOpen = true },
+                    onClick = {
+                        com.grokplayer.tv.data.KeyGate.arm()
+                        addOpen = true
+                    },
                     modifier = Modifier
                         .then(if (visible.isEmpty()) Modifier.focusRequester(firstFocus) else Modifier)
                         .focusRequester(addFocus)
@@ -271,21 +320,23 @@ fun StreamsScreen(
                     modifier = Modifier.weight(1f),
                 ) {
                     itemsIndexed(visible, key = { _, item -> item.id }) { index, item ->
-                        val restoreIndex = lastFocusedIndex.coerceIn(0, visible.lastIndex)
                         StreamTile(
                             item = item,
+                            enablePreview = optionsFor == null && !addOpen,
+                            progress = if (item.kind == StreamKind.Live) null else watch?.progressFraction(item.toVideo()),
                             modifier = Modifier
                                 .then(
-                                    if (index == restoreIndex) {
-                                        Modifier.focusRequester(firstFocus)
-                                    } else {
-                                        Modifier
-                                    },
+                                    if (index == 0) Modifier.focusRequester(firstFocus) else Modifier,
                                 )
                                 .focusRequester(
                                     if (index == 0) firstTile else tileFocus[index.coerceAtMost(tileFocus.lastIndex)],
                                 )
-                                .onFocusChanged { if (it.isFocused) lastFocusedIndex = index }
+                                .onFocusChanged {
+                                    if (it.isFocused && optionsFor == null && !addOpen && !restoreAfterModal) {
+                                        lastFocusedIndex = index
+                                        restoreStreamId = item.id
+                                    }
+                                }
                                 .focusProperties {
                                     left = if (index % 3 == 0) railFocus else FocusRequester.Default
                                     up = if (index < 3) filterFocus[0] else FocusRequester.Default
@@ -293,10 +344,17 @@ fun StreamsScreen(
                             onClick = {
                                 savedScrollIndex = gridState.firstVisibleItemIndex
                                 savedScrollOffset = gridState.firstVisibleItemScrollOffset
-                                val queue = visible.map { it.toVideo() }
-                                onPlay(queue, index)
+                                val videos = visible.map { it.toVideo() }
+                                val (queue, start) = com.grokplayer.tv.data.vodQueue(videos, index)
+                                onPlay(queue, start)
                             },
-                            onLongClick = { optionsFor = item },
+                            onLongClick = {
+                                lastFocusedIndex = index
+                                restoreStreamId = item.id
+                                savedScrollIndex = gridState.firstVisibleItemIndex
+                                savedScrollOffset = gridState.firstVisibleItemScrollOffset
+                                optionsFor = item
+                            },
                         )
                     }
                 }
@@ -308,6 +366,7 @@ fun StreamsScreen(
         }
         if (addOpen) {
             AddStreamDialog(
+                initialUrl = seedUrl,
                 onSave = { title, url ->
                     streams.add(title, url, StreamKind.Vod)
                     addOpen = false
@@ -319,53 +378,110 @@ fun StreamsScreen(
                         }
                     }
                 },
-                onDismiss = { addOpen = false },
+                onPlayHit = { hit ->
+                    streams.add(
+                        title = hit.title,
+                        url = hit.playUrl,
+                        kind = hit.kind,
+                        posterUrl = hit.thumbnailUrl,
+                        referer = hit.referer,
+                        userAgent = hit.userAgent,
+                        durationMs = hit.durationMs,
+                        pageUrl = hit.pageUrl,
+                    )
+                    addOpen = false
+                    onPlay(listOf(hit.toVideo()), 0)
+                },
+                onSaveHit = { hit ->
+                    streams.add(
+                        title = hit.title,
+                        url = hit.playUrl,
+                        kind = hit.kind,
+                        posterUrl = hit.thumbnailUrl,
+                        referer = hit.referer,
+                        userAgent = hit.userAgent,
+                        durationMs = hit.durationMs,
+                        pageUrl = hit.pageUrl,
+                    )
+                    addOpen = false
+                    onNotice("Akış eklendi")
+                },
+                onDismiss = {
+                    addOpen = false
+                    seedUrl = null
+                },
             )
         }
         optionsFor?.let { item ->
-            StreamOptions(
-                item = item,
-                downloadStatus = downloads.statusOf(item.url),
-                canSend = canSend,
-                onSend = {
+            val video = item.toVideo()
+            val downloadStatus = downloads.statusOf(item.url)
+            com.grokplayer.tv.ui.lists.VideoMenuHost(
+                video = video,
+                playlists = playlists,
+                collections = collections,
+                onNotice = onNotice,
+                watch = watch,
+                showAddToList = item.kind == StreamKind.Vod,
+                onDismiss = {
                     optionsFor = null
-                    onSend(item.toVideo())
+                    restoreAfterModal = true
                 },
-                onPlay = {
-                    optionsFor = null
-                    savedScrollIndex = gridState.firstVisibleItemIndex
-                    savedScrollOffset = gridState.firstVisibleItemScrollOffset
-                    val queue = visible.map { it.toVideo() }
-                    val index = visible.indexOfFirst { it.id == item.id }.coerceAtLeast(0)
-                    onPlay(queue, index)
-                },
-                onDownload = {
-                    optionsFor = null
-                    if (item.kind != StreamKind.Vod) {
-                        onNotice("Canlı yayın indirilemez")
-                    } else {
-                        val status = downloads.statusOf(item.url)
-                        when (status) {
+                extraActions = listOf(
+                    com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.resume)) {
+                        optionsFor = null
+                        savedScrollIndex = gridState.firstVisibleItemIndex
+                        savedScrollOffset = gridState.firstVisibleItemScrollOffset
+                        val videos = visible.map { it.toVideo() }
+                        val index = visible.indexOfFirst { it.id == item.id }.coerceAtLeast(0)
+                        val (queue, start) = com.grokplayer.tv.data.vodQueue(videos, index)
+                        onPlay(queue, start)
+                    },
+                ),
+                trailingActions = buildList {
+                    if (canSend) {
+                        add(
+                            com.grokplayer.tv.ui.components.ModalAction("PC’ye gönder") {
+                                optionsFor = null
+                                onSend(video)
+                            },
+                        )
+                    }
+                    if (item.kind == StreamKind.Vod) {
+                        val label = when (downloadStatus) {
                             com.grokplayer.tv.data.DownloadStatus.Queued,
                             com.grokplayer.tv.data.DownloadStatus.Running,
-                            -> onNotice("İndirme zaten sürüyor")
-                            com.grokplayer.tv.data.DownloadStatus.Done -> onNotice("Bu yayın zaten indirildi")
-                            else -> {
-                                downloads.enqueue(item.title, item.url, downloadHeight)
-                                onNotice("İndirme başladı")
-                            }
+                            -> "İndiriliyor…"
+                            com.grokplayer.tv.data.DownloadStatus.Done -> "İndirildi"
+                            else -> stringResource(R.string.download)
                         }
+                        add(
+                            com.grokplayer.tv.ui.components.ModalAction(label) {
+                                optionsFor = null
+                                val result = downloads.enqueueAll(
+                                    listOf(item.title to item.url),
+                                    downloadHeight,
+                                )
+                                onNotice(result.notice().ifBlank { "İndirme kuyruğu güncellendi" })
+                            },
+                        )
                     }
+                    add(
+                        com.grokplayer.tv.ui.components.ModalAction(
+                            if (item.favorite) "Favorilerden çıkar" else "Favorilere ekle",
+                        ) {
+                            streams.toggleFavorite(item.id)
+                            optionsFor = null
+                            restoreAfterModal = true
+                        },
+                    )
+                    add(
+                        com.grokplayer.tv.ui.components.ModalAction("Sil") {
+                            streams.remove(item.id)
+                            optionsFor = null
+                            restoreAfterModal = true
+                        },
+                    )
                 },
-                onFavorite = {
-                    streams.toggleFavorite(item.id)
-                    optionsFor = null
-                },
-                onDelete = {
-                    streams.remove(item.id)
-                    optionsFor = null
-                },
-                onDismiss = { optionsFor = null },
             )
         }
     }
@@ -377,6 +493,8 @@ private fun StreamTile(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enablePreview: Boolean = true,
+    progress: Float? = null,
 ) {
     FocusableAction(onClick = onClick, onLongClick = onLongClick, modifier = modifier, shape = RoundedCornerShape(8.dp)) { focused ->
         Column(Modifier.fillMaxWidth()) {
@@ -391,6 +509,14 @@ private fun StreamTile(
                     focused = focused,
                     path = null,
                     format = if (item.kind == StreamKind.Live) "CANLI" else "VOD",
+                    posterUrl = item.posterUrl,
+                    durationMs = item.durationMs,
+                    isLive = item.kind == StreamKind.Live,
+                    enablePreview = enablePreview,
+                    originUrl = item.pageUrl ?: item.url,
+                    referer = item.referer,
+                    userAgent = item.userAgent,
+                    progress = progress,
                     modifier = Modifier.fillMaxSize(),
                 )
                 Icon(
@@ -402,21 +528,14 @@ private fun StreamTile(
                         .padding(8.dp)
                         .size(18.dp),
                 )
-                if (item.kind == StreamKind.Live) {
-                    Row(
-                        Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(Modifier.size(7.dp).background(GrokPink, CircleShape))
-                        Text("  CANLI", style = GrokType.cardMeta, color = GrokWhite)
-                    }
-                }
             }
             Text(item.title, style = GrokType.cardTitle, color = GrokWhite, modifier = Modifier.padding(top = 8.dp))
             Text(
-                text = if (item.kind == StreamKind.Live) "CANLI" else "VOD",
+                text = when {
+                    item.kind == StreamKind.Live -> "CANLI"
+                    item.durationMs > 0L -> "${item.durationMs.formatClock()} · VOD"
+                    else -> "VOD"
+                },
                 style = GrokType.cardMeta,
                 color = GrokMuted,
                 modifier = Modifier.padding(top = 2.dp),
@@ -428,7 +547,10 @@ private fun StreamTile(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AddStreamDialog(
+    initialUrl: String? = null,
     onSave: (String, String) -> Unit,
+    onPlayHit: (com.grokplayer.tv.data.scan.ScanHit) -> Unit,
+    onSaveHit: (com.grokplayer.tv.data.scan.ScanHit) -> Unit,
     onDismiss: () -> Unit,
 ) {
     RememberFocusLock()
@@ -457,11 +579,46 @@ private fun AddStreamDialog(
     }
     InterceptBack { closeImeOrDismiss(); true }
     var title by remember { mutableStateOf("") }
-    var url by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf(initialUrl.orEmpty()) }
+    var autoScan by remember { mutableStateOf(!initialUrl.isNullOrBlank()) }
     var error by remember { mutableStateOf<String?>(null) }
+    var scanning by remember { mutableStateOf(false) }
+    var hits by remember { mutableStateOf<List<com.grokplayer.tv.data.scan.ScanHit>>(emptyList()) }
     val nameFocus = remember { FocusRequester() }
     val urlFocus = remember { FocusRequester() }
     val saveFocus = remember { FocusRequester() }
+    val scanFocus = remember { FocusRequester() }
+    val firstHit = remember { FocusRequester() }
+    val scanScope = rememberCoroutineScope()
+    fun startScan(target: String) {
+        val clean = target.trim()
+        if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
+            error = "Geçerli bir http veya https adresi girin"
+            return
+        }
+        error = null
+        scanning = true
+        hits = emptyList()
+        scanScope.launch {
+            val found = withContext(Dispatchers.IO) {
+                runCatching { com.grokplayer.tv.data.scan.PageScanner.scan(context, clean) }
+                    .onFailure { android.util.Log.e("GrokPlayer", "scan failed $clean", it) }
+                    .getOrDefault(emptyList())
+            }
+            scanning = false
+            if (found.isEmpty()) {
+                error = context.getString(R.string.scan_empty)
+            } else {
+                hits = found
+            }
+        }
+    }
+    LaunchedEffect(autoScan) {
+        if (autoScan) {
+            autoScan = false
+            startScan(url)
+        }
+    }
     BackHandler(onBack = { closeImeOrDismiss() })
     Box(
         Modifier
@@ -472,9 +629,10 @@ private fun AddStreamDialog(
     ) {
         Column(
             Modifier
-                .width(420.dp)
+                .width(520.dp)
                 .background(GrokSurface, RoundedCornerShape(12.dp))
-                .padding(18.dp),
+                .padding(18.dp)
+                .verticalScroll(rememberScrollState()),
         ) {
             Text(stringResource(R.string.add_stream), style = GrokType.section, color = GrokWhite)
             DialogField(
@@ -502,7 +660,7 @@ private fun AddStreamDialog(
                     .focusRequester(urlFocus)
                     .focusProperties {
                         up = nameFocus
-                        down = saveFocus
+                        down = scanFocus
                     },
                 onFocused = {
                     imeWasOpen = true
@@ -512,21 +670,66 @@ private fun AddStreamDialog(
             error?.let {
                 Text(it, style = GrokType.cardMeta, color = GrokPink, modifier = Modifier.padding(top = 8.dp))
             }
-            OutlineButton(
-                label = stringResource(R.string.stream_save),
-                onClick = {
-                    val clean = url.trim()
-                    if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
-                        error = "Geçerli bir http veya https adresi girin"
-                    } else {
-                        onSave(title, clean)
-                    }
-                },
-                modifier = Modifier
-                    .padding(top = 14.dp)
-                    .focusRequester(saveFocus)
-                    .focusProperties { up = urlFocus },
-            )
+            if (scanning) {
+                Text(
+                    stringResource(R.string.scan_scanning),
+                    style = GrokType.cardMeta,
+                    color = GrokYellow,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            }
+            Row(
+                Modifier.padding(top = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlineButton(
+                    label = stringResource(R.string.scan_page),
+                    onClick = { startScan(url) },
+                    modifier = Modifier
+                        .focusRequester(scanFocus)
+                        .focusProperties {
+                            up = urlFocus
+                            right = saveFocus
+                            down = if (hits.isNotEmpty()) firstHit else scanFocus
+                        },
+                )
+                OutlineButton(
+                    label = stringResource(R.string.stream_save),
+                    onClick = {
+                        val clean = url.trim()
+                        if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
+                            error = "Geçerli bir http veya https adresi girin"
+                        } else {
+                            onSave(title, clean)
+                        }
+                    },
+                    modifier = Modifier
+                        .focusRequester(saveFocus)
+                        .focusProperties {
+                            up = urlFocus
+                            left = scanFocus
+                        },
+                )
+            }
+            if (hits.isNotEmpty()) {
+                Text(
+                    "${hits.size} yayın bulundu",
+                    style = GrokType.cardMeta,
+                    color = GrokMuted,
+                    modifier = Modifier.padding(top = 12.dp, bottom = 6.dp),
+                )
+                hits.forEachIndexed { index, hit ->
+                    ScanHitRow(
+                        hit = hit,
+                        onPlay = { onPlayHit(hit) },
+                        onSave = { onSaveHit(hit) },
+                        playModifier = Modifier.then(
+                            if (index == 0) Modifier.focusRequester(firstHit) else Modifier,
+                        ),
+                    )
+                }
+                LaunchedEffect(hits) { runCatching { firstHit.requestFocus() } }
+            }
         }
     }
     LaunchedEffect(Unit) {
@@ -534,6 +737,66 @@ private fun AddStreamDialog(
             kotlinx.coroutines.delay(40)
             runCatching { nameFocus.requestFocus() }
         }
+    }
+}
+
+@Composable
+private fun ScanHitRow(
+    hit: com.grokplayer.tv.data.scan.ScanHit,
+    onPlay: () -> Unit,
+    onSave: () -> Unit,
+    playModifier: Modifier = Modifier,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp)
+            .background(GrokInk, RoundedCornerShape(8.dp))
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        VideoPoster(
+            uri = Uri.parse(hit.playUrl),
+            title = hit.title,
+            focused = false,
+            posterUrl = hit.thumbnailUrl,
+            modifier = Modifier
+                .width(96.dp)
+                .height(54.dp),
+        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = hit.title,
+                style = GrokType.cardTitle,
+                color = GrokWhite,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = buildString {
+                    append(if (hit.kind == StreamKind.Live) "CANLI" else "VOD")
+                    if (hit.detail.isNotBlank()) {
+                        append(" · ")
+                        append(hit.detail)
+                    }
+                },
+                style = GrokType.cardMeta,
+                color = GrokMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+        OutlineButton(
+            label = stringResource(R.string.scan_play),
+            onClick = onPlay,
+            modifier = playModifier,
+        )
+        OutlineButton(
+            label = stringResource(R.string.scan_save),
+            onClick = onSave,
+        )
     }
 }
 
@@ -563,40 +826,4 @@ private fun DialogField(
                 .onFocusChanged { if (it.isFocused) onFocused() },
         )
     }
-}
-
-@Composable
-private fun StreamOptions(
-    item: StreamItem,
-    downloadStatus: com.grokplayer.tv.data.DownloadStatus?,
-    onPlay: () -> Unit,
-    canSend: Boolean = false,
-    onSend: () -> Unit = {},
-    onDownload: () -> Unit,
-    onFavorite: () -> Unit,
-    onDelete: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    com.grokplayer.tv.ui.components.ModalMenu(
-        title = item.title,
-        onDismiss = onDismiss,
-        width = 320.dp,
-        actions = buildList {
-            add(com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.resume), onPlay))
-            if (canSend) add(com.grokplayer.tv.ui.components.ModalAction("PC’ye gönder", onSend))
-            if (item.kind == StreamKind.Vod) {
-                val label = when (downloadStatus) {
-                    com.grokplayer.tv.data.DownloadStatus.Queued,
-                    com.grokplayer.tv.data.DownloadStatus.Running,
-                    -> "İndiriliyor…"
-                    com.grokplayer.tv.data.DownloadStatus.Done -> "İndirildi"
-                    else -> stringResource(R.string.download)
-                }
-                add(com.grokplayer.tv.ui.components.ModalAction(label, onDownload))
-            }
-            add(com.grokplayer.tv.ui.components.ModalAction(if (item.favorite) "Favorilerden çıkar" else "Favorilere ekle", onFavorite))
-            add(com.grokplayer.tv.ui.components.ModalAction("Sil", onDelete))
-            add(com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.close), onDismiss))
-        },
-    )
 }

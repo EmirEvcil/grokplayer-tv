@@ -54,6 +54,7 @@ fun DownloadsScreen(
     downloads: DownloadStore,
     onPlay: (List<LibraryVideo>, Int) -> Unit,
     onRemoved: (DownloadItem) -> Unit = {},
+    watch: com.grokplayer.tv.data.WatchStore? = null,
     modifier: Modifier = Modifier,
 ) {
     var optionsFor by remember { mutableStateOf<DownloadItem?>(null) }
@@ -73,7 +74,7 @@ fun DownloadsScreen(
     InterceptBack(enabled = optionsFor != null) { dismiss() }
     BackHandler(enabled = optionsFor != null) { dismiss() }
     LaunchedEffect(restoreAfterModal, downloads.items.map { it.id }) {
-        if (!restoreAfterModal) return@LaunchedEffect
+        if (!restoreAfterModal || optionsFor != null) return@LaunchedEffect
         kotlinx.coroutines.delay(40)
         val items = downloads.items
         val target = items.firstOrNull { it.id == lastFocusedId } ?: items.firstOrNull()
@@ -141,7 +142,7 @@ fun DownloadsScreen(
                                         val playIndex = queue.indexOfFirst { it.id == item.toVideo().id }.coerceAtLeast(0)
                                         onPlay(queue, playIndex)
                                     }
-                                    DownloadStatus.Failed -> downloads.enqueue(item.title, item.url)
+                                    DownloadStatus.Failed -> downloads.retry(item.id)
                                     else -> Unit
                                 }
                             },
@@ -152,31 +153,48 @@ fun DownloadsScreen(
             }
         }
         optionsFor?.let { item ->
-            DownloadOptions(
-                item = item,
-                onPlay = {
-                    closeOptions()
+            com.grokplayer.tv.ui.lists.VideoMenuHost(
+                video = item.toVideo(),
+                meta = statusLabel(item),
+                showAddToList = false,
+                watch = watch,
+                onDismiss = { closeOptions() },
+                extraActions = buildList {
                     if (item.status == DownloadStatus.Done) {
-                        onPlay(listOf(item.toVideo()), 0)
+                        add(
+                            com.grokplayer.tv.ui.components.ModalAction("Oynat") {
+                                closeOptions()
+                                onPlay(listOf(item.toVideo()), 0)
+                            },
+                        )
+                    }
+                    if (item.status == DownloadStatus.Failed) {
+                        add(
+                            com.grokplayer.tv.ui.components.ModalAction("Tekrar dene") {
+                                downloads.retry(item.id)
+                                closeOptions()
+                            },
+                        )
+                    }
+                    if (item.status == DownloadStatus.Running || item.status == DownloadStatus.Queued) {
+                        add(
+                            com.grokplayer.tv.ui.components.ModalAction("İptal et") {
+                                downloads.cancel(item.id)
+                                closeOptions()
+                            },
+                        )
                     }
                 },
-                onRetry = {
-                    downloads.enqueue(item.title, item.url)
-                    closeOptions()
-                },
-                onCancel = {
-                    downloads.cancel(item.id)
-                    closeOptions()
-                },
-                onDelete = {
-                    val list = downloads.items
-                    val idx = list.indexOfFirst { it.id == item.id }
-                    lastFocusedId = list.getOrNull(idx + 1)?.id ?: list.getOrNull(idx - 1)?.id
-                    downloads.remove(item.id)
-                    onRemoved(item)
-                    closeOptions()
-                },
-                onDismiss = { closeOptions() },
+                trailingActions = listOf(
+                    com.grokplayer.tv.ui.components.ModalAction("Sil") {
+                        val list = downloads.items
+                        val idx = list.indexOfFirst { it.id == item.id }
+                        lastFocusedId = list.getOrNull(idx + 1)?.id ?: list.getOrNull(idx - 1)?.id
+                        downloads.remove(item.id)
+                        onRemoved(item)
+                        closeOptions()
+                    },
+                ),
             )
         }
     }
@@ -227,36 +245,6 @@ private fun DownloadRow(
             }
         }
     }
-}
-
-@Composable
-private fun DownloadOptions(
-    item: DownloadItem,
-    onPlay: () -> Unit,
-    onRetry: () -> Unit,
-    onCancel: () -> Unit,
-    onDelete: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    com.grokplayer.tv.ui.components.ModalMenu(
-        title = item.title,
-        meta = statusLabel(item),
-        onDismiss = onDismiss,
-        width = 320.dp,
-        actions = buildList {
-            if (item.status == DownloadStatus.Done) {
-                add(com.grokplayer.tv.ui.components.ModalAction("Oynat", onPlay))
-            }
-            if (item.status == DownloadStatus.Failed) {
-                add(com.grokplayer.tv.ui.components.ModalAction("Tekrar dene", onRetry))
-            }
-            if (item.status == DownloadStatus.Running || item.status == DownloadStatus.Queued) {
-                add(com.grokplayer.tv.ui.components.ModalAction("İptal et", onCancel))
-            }
-            add(com.grokplayer.tv.ui.components.ModalAction("Sil", onDelete))
-            add(com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.close), onDismiss))
-        },
-    )
 }
 
 private fun statusLabel(item: DownloadItem): String = when (item.status) {

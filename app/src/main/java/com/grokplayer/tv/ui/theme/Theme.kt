@@ -3,10 +3,9 @@ package com.grokplayer.tv.ui.theme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.staticCompositionLocalOf
+import com.grokplayer.tv.data.FocusLock
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.darkColorScheme
 
@@ -23,9 +22,7 @@ private val TvColors = darkColorScheme(
 
 val LocalPlaceholderAction = staticCompositionLocalOf<(String) -> Unit> { {} }
 
-val LocalFocusLock = staticCompositionLocalOf<MutableState<Boolean>> {
-    mutableStateOf(false)
-}
+val LocalFocusLock = staticCompositionLocalOf { FocusLock() }
 
 class BackHub {
     private val handlers = mutableListOf<() -> Boolean>()
@@ -79,8 +76,8 @@ fun InterceptBack(enabled: Boolean = true, onBack: () -> Boolean) {
 fun RememberFocusLock() {
     val lock = LocalFocusLock.current
     DisposableEffect(Unit) {
-        lock.value = true
-        onDispose { lock.value = false }
+        lock.push()
+        onDispose { lock.pop() }
     }
 }
 

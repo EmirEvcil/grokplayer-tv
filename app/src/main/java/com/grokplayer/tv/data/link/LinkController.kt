@@ -9,6 +9,7 @@ import com.grokplayer.tv.data.BrowseVideo
 import com.grokplayer.tv.data.DownloadOwnership
 import com.grokplayer.tv.data.LibraryStore
 import com.grokplayer.tv.data.LibraryVideo
+import com.grokplayer.tv.data.fileKey
 import com.grokplayer.tv.data.SharedFolders
 import com.grokplayer.tv.data.StorageSource
 import com.grokplayer.tv.data.StreamHttp
@@ -67,6 +68,9 @@ class LinkController(context: Context) {
     private var stateMisses = 0
     private var unreachableStreak = 0
     private var connectedFalseStreak = 0
+    private var lastBrowseAsk = ""
+    private var lastVodAsk = ""
+    private var lastMetaAt = 0L
     private val _ui = MutableStateFlow(
         LinkUi(
             visible = prefs.getBoolean("visible", true),
@@ -307,15 +311,19 @@ class LinkController(context: Context) {
         return job.id
     }
 
-    suspend fun browse(pc: PairedPc, path: String): BrowseListing? {
-        val raw = get(pc, "/v1/browse?path=" + java.net.URLEncoder.encode(path, Charsets.UTF_8)) ?: return null
+    suspend fun browse(pc: PairedPc, path: String, deep: Boolean = false): BrowseListing? {
+        val encoded = java.net.URLEncoder.encode(path, Charsets.UTF_8)
+        val suffix = if (deep) "&deep=1" else ""
+        val raw = get(pc, "/v1/browse?path=$encoded$suffix") ?: return null
         return runCatching { parseListing(raw) }.getOrNull()
     }
 
-    fun fileUrl(pc: PairedPc, path: String): String =
-        "http://${pc.host}:${pc.port}/v1/file?path=" +
-            java.net.URLEncoder.encode(path, Charsets.UTF_8) +
+    fun fileUrl(pc: PairedPc, path: String): String {
+        val safe = path.replace('\\', '/')
+        return "http://${pc.host}:${pc.port}/v1/file?path=" +
+            java.net.URLEncoder.encode(safe, Charsets.UTF_8) +
             "&token=" + java.net.URLEncoder.encode(pc.token, Charsets.UTF_8)
+    }
 
     fun videosFrom(pc: PairedPc, videos: List<BrowseVideo>): List<LibraryVideo> {
         return videos.map { item ->
@@ -340,10 +348,23 @@ class LinkController(context: Context) {
     fun pushProgress(library: LibraryStore) {
         val pc = _ui.value.paired.firstOrNull { it.id == _ui.value.connectedId } ?: return
         val items = JSONArray()
+        val sent = HashSet<String>()
+        fun add(key: String, pos: Long, title: String?) {
+            if (key.isBlank() || pos < 1_000L || !sent.add(key)) return
+            val row = JSONObject().put("key", key).put("positionMs", pos)
+            if (!title.isNullOrBlank()) row.put("title", title)
+            items.put(row)
+        }
         library.keyedProgressSnapshot().forEach { (key, pos) ->
-            if (pos >= 1_000L) {
-                items.put(JSONObject().put("key", key).put("positionMs", pos))
-            }
+            val title = library.videos.firstOrNull { video ->
+                video.fileKey() == key || "title|${video.title.trim().lowercase()}" == key
+            }?.title
+            add(key, pos, title)
+        }
+        library.videos.forEach { video ->
+            val pos = library.startPosition(video)
+            val key = video.fileKey() ?: "title|${video.title.trim().lowercase()}"
+            add(key, pos, video.title)
         }
         if (items.length() == 0) return
         scope.launch {
@@ -732,6 +753,76 @@ class LinkController(context: Context) {
             val remote = if (staleEmpty) ui.remote else next
             ui.copy(connectedId = pc.id, connectingId = null, remote = remote)
         }
+        fulfillAsks(live, json)
+        announceOffer(live)
+    }
+
+    private fun fulfillAsks(pc: PairedPc, json: JSONObject) {
+        json.optJSONObject("browse")?.let { ask ->
+            val id = ask.optString("id")
+            if (id.isNotBlank() && id != lastBrowseAsk) {
+                lastBrowseAsk = id
+                val listing = sharedFolders.listing(ask.optString("path"))
+                val body = JSONObject()
+                    .put("id", id)
+                    .put("path", listing.path)
+                    .put("parent", listing.parent ?: "")
+                    .put("granted", JSONArray(listing.granted))
+                    .put(
+                        "dirs",
+                        JSONArray(listing.dirs.map { JSONObject().put("name", it.name).put("path", it.path) }),
+                    )
+                    .put(
+                        "videos",
+                        JSONArray(
+                            listing.videos.map {
+                                JSONObject()
+                                    .put("name", it.name)
+                                    .put("path", it.path)
+                                    .put("size", it.size)
+                                    .put("title", it.title)
+                            },
+                        ),
+                    )
+                scope.launch { post(pc, "/v1/browse-result", body.toString()) }
+            }
+        }
+        json.optJSONObject("vodAsk")?.let { ask ->
+            val id = ask.optString("id")
+            val created = ask.optLong("createdAt")
+            val fresh = created <= 0L || System.currentTimeMillis() - created < 30_000L
+            if (id.isNotBlank() && id != lastVodAsk && fresh) {
+                lastVodAsk = id
+                val path = ask.optString("path")
+                val title = ask.optString("title")
+                scope.launch(Dispatchers.IO) {
+                    val file = sharedFolders.resolve(path)?.takeIf { it.isFile } ?: return@launch
+                    runCatching {
+                        putFile(
+                            pc,
+                            file,
+                            title.ifBlank { file.nameWithoutExtension },
+                            play = false,
+                            uploadName = file.name,
+                            key = mediaFileKey(file.name, file.length()),
+                            startOver = false,
+                            requestPath = "/v1/tv-vod/$id",
+                        ) { _, _ -> }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun announceOffer(pc: PairedPc) {
+        val now = System.currentTimeMillis()
+        if (now - lastMetaAt < 8_000L) return
+        lastMetaAt = now
+        ensureFileServer()
+        val body = JSONObject()
+            .put("port", fileServer?.port ?: FileOfferServer.OFFER_PORT)
+            .put("hosts", JSONArray(fileServer?.hosts().orEmpty()))
+        scope.launch { post(pc, "/v1/tv-meta", body.toString()) }
     }
 
     private fun parseState(json: JSONObject, pcId: String): RemoteState {
@@ -929,15 +1020,17 @@ class LinkController(context: Context) {
         uploadName: String? = null,
         key: String? = null,
         startOver: Boolean = true,
+        requestPath: String? = null,
         onProgress: (Long, Long) -> Unit,
     ) {
         if (jobId != null && cancelledJobs.contains(jobId)) return
         val name = uploadName ?: file.name
-        val conn = open(pc, "/v1/inbox/${encode(name)}", "PUT")
+        val conn = open(pc, requestPath ?: "/v1/inbox/${encode(name)}", "PUT")
         conn.doOutput = true
         conn.setFixedLengthStreamingMode(file.length())
         conn.setRequestProperty("Content-Type", "application/octet-stream")
         conn.setRequestProperty("X-Title", title)
+        conn.setRequestProperty("X-Name", name)
         conn.setRequestProperty("X-Play", if (play) "now" else "queue")
         conn.setRequestProperty("X-Resume", if (startOver) "start" else "continue")
         if (!key.isNullOrBlank()) conn.setRequestProperty("X-Key", key)
@@ -1088,6 +1181,8 @@ internal class FileOfferServer(
 ) {
     private var server: ServerSocket? = null
     private val files = LinkedHashMap<String, File>()
+    val port: Int get() = server?.localPort ?: OFFER_PORT
+    fun hosts(): List<String> = localIps()
 
     fun start() {
         server = try {
@@ -1223,7 +1318,11 @@ internal class FileOfferServer(
         when {
             rawPath == "v1/browse" -> {
                 val path = queryValue(query, "path")
-                val listing = folders?.listing(path) ?: return
+                val listing = folders?.listing(path)
+                if (listing == null) {
+                    out.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
+                    return
+                }
                 val body = JSONObject()
                     .put("path", listing.path)
                     .put("parent", listing.parent ?: "")
@@ -1237,7 +1336,11 @@ internal class FileOfferServer(
             }
             rawPath == "v1/file" -> {
                 val path = queryValue(query, "path")
-                val file = folders?.resolve(path)?.takeIf { it.isFile } ?: return
+                val file = folders?.resolve(path)?.takeIf { it.isFile }
+                if (file == null) {
+                    out.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
+                    return
+                }
                 streamFile(out, file, range, method)
             }
             rawPath == "v1/have" -> writeJson(out, JSONObject().put("items", have()).toString())
@@ -1261,6 +1364,15 @@ internal class FileOfferServer(
         out.flush()
     }
 
+    private fun fileType(file: File): String = when (file.extension.lowercase()) {
+        "mp4", "m4v", "mov" -> "video/mp4"
+        "mkv" -> "video/x-matroska"
+        "webm" -> "video/webm"
+        "avi" -> "video/x-msvideo"
+        "ts", "m2ts" -> "video/mp2t"
+        else -> "application/octet-stream"
+    }
+
     private fun streamFile(out: java.io.OutputStream, file: File, range: String?, method: String) {
         val total = file.length()
         val (start, end) = parseRange(range, total)
@@ -1268,7 +1380,7 @@ internal class FileOfferServer(
         val status = if (start == 0L && end == total - 1L) "200 OK" else "206 Partial Content"
         val head = buildString {
             append("HTTP/1.1 $status\r\n")
-            append("Content-Type: application/octet-stream\r\n")
+            append("Content-Type: ${fileType(file)}\r\n")
             append("Accept-Ranges: bytes\r\n")
             append("Content-Length: $length\r\n")
             if (status.startsWith("206")) append("Content-Range: bytes $start-$end/$total\r\n")

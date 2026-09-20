@@ -43,6 +43,101 @@ internal fun sidecarSubtitleConfigs(video: LibraryVideo): List<MediaItem.Subtitl
     }
 }
 
+internal data class AudioOption(
+    val key: String,
+    val label: String,
+    val group: TrackGroup? = null,
+    val trackIndex: Int = -1,
+    val language: String? = null,
+    val playUrl: String? = null,
+    val mime: String? = null,
+)
+
+internal fun listAudioOptions(tracks: Tracks): List<AudioOption> {
+    val options = mutableListOf<AudioOption>()
+    tracks.groups.forEachIndexed { groupIndex, group ->
+        if (group.type != C.TRACK_TYPE_AUDIO) return@forEachIndexed
+        for (trackIndex in 0 until group.length) {
+            if (!group.isTrackSupported(trackIndex)) continue
+            val format = group.getTrackFormat(trackIndex)
+            options += AudioOption(
+                key = "a:${groupIndex}:${trackIndex}:${format.id.orEmpty()}:${format.language.orEmpty()}",
+                label = audioLabel(format),
+                group = group.mediaTrackGroup,
+                trackIndex = trackIndex,
+                language = format.language,
+            )
+        }
+    }
+    return options.distinctBy { "${it.language.orEmpty()}|${it.label}|${it.playUrl.orEmpty()}" }
+}
+
+internal fun mergeAudioOptions(
+    exo: List<AudioOption>,
+    youtube: List<com.grokplayer.tv.data.scan.YtAudioTrack>,
+): List<AudioOption> {
+    if (youtube.isEmpty()) return exo
+    val ytOptions = youtube.map { track ->
+        AudioOption(
+            key = "yt-a:${track.id}",
+            label = track.menuLabel(),
+            language = track.language,
+            playUrl = track.url,
+            mime = track.mime,
+        )
+    }
+    val seen = youtube.map { it.language.lowercase() }.toSet()
+    val extra = exo.filter { option ->
+        val lang = option.language?.lowercase().orEmpty()
+        lang.isNotEmpty() && lang !in seen &&
+            !option.label.equals("Default", true) &&
+            option.label != "Orijinal"
+    }
+    return ytOptions + extra
+}
+
+internal fun applyAudioChoice(player: Player, option: AudioOption) {
+    if (option.group == null) return
+    val builder = player.trackSelectionParameters.buildUpon()
+        .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+        .setOverrideForType(TrackSelectionOverride(option.group, listOf(option.trackIndex)))
+    player.trackSelectionParameters = builder.build()
+}
+
+internal fun activeAudioKey(tracks: Tracks, options: List<AudioOption>): String? {
+    return options.firstOrNull { option ->
+        option.group != null && tracks.groups.any { group ->
+            group.type == C.TRACK_TYPE_AUDIO &&
+                group.mediaTrackGroup == option.group &&
+                group.isTrackSelected(option.trackIndex)
+        }
+    }?.key
+}
+
+internal fun mergeSubtitleOptions(
+    exo: List<SubtitleOption>,
+    youtube: List<com.grokplayer.tv.data.scan.YtCaptionTrack>,
+): List<SubtitleOption> {
+    val out = exo.toMutableList()
+    if (out.none { it.isOff }) out.add(0, SubtitleOption.Off)
+    youtube.forEach { track ->
+        val exists = out.any { option ->
+            !option.isOff && (
+                option.language?.lowercase() == track.language.lowercase() ||
+                    option.key.startsWith("yt:${track.language}")
+                )
+        }
+        if (!exists) {
+            out += SubtitleOption(
+                key = "yt:${track.language}:${if (track.auto) "asr" else "m"}",
+                label = track.displayLabel(),
+                language = track.language,
+            )
+        }
+    }
+    return out
+}
+
 internal fun listSubtitleOptions(tracks: Tracks): List<SubtitleOption> {
     val options = mutableListOf(SubtitleOption.Off)
     tracks.groups.forEachIndexed { groupIndex, group ->
@@ -124,6 +219,18 @@ private fun resolveVideoFile(video: LibraryVideo): File? {
 private fun sidecarLabel(file: File, language: String?): String {
     languageLabel(language)?.let { return it }
     return "Dosya · ${file.extension.uppercase(Locale.US)}"
+}
+
+private fun audioLabel(format: Format): String {
+    val named = format.label?.trim().orEmpty()
+    val language = languageLabel(format.language)
+    return when {
+        named.isNotEmpty() && language != null && !named.equals(language, ignoreCase = true) ->
+            "$language · $named"
+        named.isNotEmpty() -> named
+        language != null -> language
+        else -> "Orijinal"
+    }
 }
 
 private fun subtitleLabel(format: Format): String {

@@ -11,6 +11,7 @@ import android.view.LayoutInflater
 import android.view.PixelCopy
 import android.view.SurfaceView
 import android.view.TextureView
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -70,10 +72,13 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -82,13 +87,16 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
@@ -97,22 +105,34 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.BehindLiveWindowException
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
+import com.grokplayer.tv.ui.components.ModalAction
+import com.grokplayer.tv.ui.components.ModalMenu
 import com.grokplayer.tv.ui.theme.InterceptBack
 import com.grokplayer.tv.R
 import com.grokplayer.tv.data.LibraryStore
+import com.grokplayer.tv.data.LibraryVideo
 import com.grokplayer.tv.data.PlaySession
 import com.grokplayer.tv.data.PlaybackSettings
 import com.grokplayer.tv.data.PreviewGrabber
 import com.grokplayer.tv.data.StreamHttp
 import com.grokplayer.tv.data.StreamProbe
+import com.grokplayer.tv.data.scan.YouTubeAudio
+import com.grokplayer.tv.data.scan.YouTubeCaptions
+import com.grokplayer.tv.data.scan.YouTubeResolver
+import com.grokplayer.tv.data.scan.YtAudioTrack
+import com.grokplayer.tv.data.scan.YtCaptionLine
+import com.grokplayer.tv.data.scan.YtCaptionTrack
 import com.grokplayer.tv.data.ThumbnailCache
 import com.grokplayer.tv.data.formatClock
 import com.grokplayer.tv.data.formatSpeedLabel
+import com.grokplayer.tv.data.isVod
 import com.grokplayer.tv.data.seekTimes
+import com.grokplayer.tv.ui.components.VideoPoster
 import com.grokplayer.tv.ui.theme.GrokInk
 import com.grokplayer.tv.ui.theme.GrokMuted
 import com.grokplayer.tv.ui.theme.GrokPink
@@ -138,6 +158,8 @@ fun PlayerScreen(
     library: LibraryStore,
     settings: PlaybackSettings,
     onClose: (String) -> Unit,
+    askResume: Boolean = false,
+    remotePosition: (LibraryVideo) -> Long = { 0L },
 ) {
     val context = LocalContext.current
     var index by remember { mutableStateOf(session.startIndex.coerceIn(0, session.queue.lastIndex)) }
@@ -148,6 +170,16 @@ fun PlayerScreen(
     var selectedSubtitleKey by remember { mutableStateOf(SubtitleOption.Off.key) }
     var subtitlePicked by remember { mutableStateOf(false) }
     var subtitleCursor by remember { mutableIntStateOf(0) }
+    var audioOpen by remember { mutableStateOf(false) }
+    var audioOptions by remember { mutableStateOf<List<AudioOption>>(emptyList()) }
+    var selectedAudioKey by remember { mutableStateOf<String?>(null) }
+    var audioCursor by remember { mutableIntStateOf(0) }
+    var ytCaptions by remember { mutableStateOf<List<YtCaptionTrack>>(emptyList()) }
+    var ytAudios by remember { mutableStateOf<List<YtAudioTrack>>(emptyList()) }
+    var lastPrepared by remember { mutableStateOf<PreparedPlay?>(null) }
+    var activeDubId by remember { mutableStateOf<String?>(null) }
+    var ytLines by remember { mutableStateOf<List<YtCaptionLine>>(emptyList()) }
+    var captionPos by remember { mutableLongStateOf(0L) }
     var controls by remember { mutableStateOf(true) }
     var playing by remember { mutableStateOf(true) }
     var position by remember { mutableLongStateOf(0L) }
@@ -156,6 +188,7 @@ fun PlayerScreen(
     var speed by remember { mutableStateOf(PlaybackSettings.snapSpeed(settings.defaultSpeed)) }
     var toast by remember { mutableStateOf<String?>(null) }
     var seekBarFocused by remember { mutableStateOf(false) }
+    var barFocused by remember { mutableStateOf(false) }
     var previewVisible by remember { mutableStateOf(false) }
     var previewPos by remember { mutableLongStateOf(0L) }
     var previewFrames by remember { mutableStateOf<Map<Long, ImageBitmap>>(emptyMap()) }
@@ -175,6 +208,7 @@ fun PlayerScreen(
     var pausedLiveAt by remember { mutableLongStateOf(0L) }
     var pausedLiveOffset by remember { mutableLongStateOf(0L) }
     var hideGen by remember { mutableIntStateOf(0) }
+    var resumeOffer by remember { mutableStateOf<Pair<Long, Long>?>(null) }
     var audioAnnounced by remember { mutableStateOf(false) }
     var skipNextUp by remember { mutableStateOf(true) }
     val skipNextUpRef = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
@@ -183,8 +217,11 @@ fun PlayerScreen(
     val nextUpFocus = remember { FocusRequester() }
     val seekStepMs = settings.seekStepSeconds * 1000L
 
+    val httpFactory = remember { StreamHttp.playerDataSourceFactory(context) }
+    val mediaSourceFactory = remember {
+        DefaultMediaSourceFactory(DefaultDataSource.Factory(context, httpFactory))
+    }
     val player = remember {
-        val data = DefaultDataSource.Factory(context, StreamHttp.dataSourceFactory(context))
         val tracks = DefaultTrackSelector(context).apply {
             val params = buildUponParameters()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
@@ -205,7 +242,7 @@ fun PlayerScreen(
             .setEnableDecoderFallback(true)
             .setMediaCodecSelector(PreferStableDecoder)
         ExoPlayer.Builder(context)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(data))
+            .setMediaSourceFactory(mediaSourceFactory)
             .setRenderersFactory(renderers)
             .setTrackSelector(tracks)
             .build()
@@ -216,7 +253,8 @@ fun PlayerScreen(
     }
 
     fun applyPendingSubtitles(target: androidx.media3.exoplayer.ExoPlayer) {
-        val options = listSubtitleOptions(target.currentTracks).ifEmpty { subtitleOptions }
+        val options = mergeSubtitleOptions(listSubtitleOptions(target.currentTracks), ytCaptions)
+            .ifEmpty { subtitleOptions }
         subtitleOptions = options
         val desired = if (subtitlePicked) {
             options.firstOrNull { it.key == selectedSubtitleKey } ?: SubtitleOption.Off
@@ -247,7 +285,13 @@ fun PlayerScreen(
                 if (playbackState == Player.STATE_READY) {
                     applyPendingSubtitles(player)
                 }
-                if (playbackState == Player.STATE_ENDED && settings.autoNext && skipNextUpRef.get() && index < session.queue.lastIndex) {
+                if (playbackState == Player.STATE_ENDED &&
+                    settings.autoNext &&
+                    skipNextUpRef.get() &&
+                    !session.queue[index].isLive &&
+                    index < session.queue.lastIndex &&
+                    session.queue[index + 1].isVod()
+                ) {
                     index += 1
                 } else if (playbackState == Player.STATE_ENDED) {
                     controls = true
@@ -286,6 +330,13 @@ fun PlayerScreen(
                 val options = listSubtitleOptions(tracks)
                 subtitleOptions = options
                 subtitleCursor = subtitleCursor.coerceIn(0, options.lastIndex.coerceAtLeast(0))
+                val audios = mergeAudioOptions(listAudioOptions(tracks), ytAudios)
+                audioOptions = audios
+                selectedAudioKey = activeAudioKey(tracks, audios) ?: selectedAudioKey
+                audioCursor = audios.indexOfFirst { it.key == selectedAudioKey }.coerceAtLeast(0)
+                if (activeDubId != null) {
+                    preferSidecarAudio(player, ytAudios.firstOrNull { it.id == activeDubId }?.language)
+                }
                 if (player.playbackState == Player.STATE_READY) {
                     applyPendingSubtitles(player)
                 }
@@ -308,7 +359,11 @@ fun PlayerScreen(
         }
         player.addListener(listener)
         onDispose {
-            library.markPlayed(session.queue[index], player.currentPosition)
+            val item = session.queue.getOrNull(index)
+            if (item != null) {
+                library.markPlayed(item, player.currentPosition)
+                library.noteListPlay(session.listId, item)
+            }
             player.removeListener(listener)
             player.release()
         }
@@ -324,27 +379,49 @@ fun PlayerScreen(
         pausedLiveAt = 0L
         val openedAt = android.os.SystemClock.elapsedRealtime()
         val remote = item.uri.scheme == "http" || item.uri.scheme == "https"
-        val mediaItem = if (remote) {
-            withContext(Dispatchers.IO) { mediaItemFor(item) }
+        val prepared = if (remote) {
+            withContext(Dispatchers.IO) { preparePlay(context, item) }
         } else {
-            mediaItemFor(item)
+            preparePlay(context, item)
         }
-        Log.i("GrokPlayer", "open ${item.format} mediaItem ${android.os.SystemClock.elapsedRealtime() - openedAt}ms")
-        player.setMediaItem(mediaItem)
+        StreamHttp.applyPlayHeaders(httpFactory, prepared.referer, prepared.userAgent)
+        ytCaptions = prepared.captions
+        ytAudios = prepared.audios
+        lastPrepared = prepared
+        activeDubId = null
+        ytLines = emptyList()
+        Log.i(
+            "GrokPlayer",
+            "open ${item.format} mediaItem ${android.os.SystemClock.elapsedRealtime() - openedAt}ms caps=${prepared.captions.size} dubs=${prepared.audios.size}",
+        )
+        player.setMediaItem(prepared.mediaItem)
         player.prepare()
         subtitlePicked = false
         audioAnnounced = false
         selectedSubtitleKey = SubtitleOption.Off.key
         subtitleOptions = listOf(SubtitleOption.Off)
-        val start = if (resume && settings.resumeEnabled && !item.isLive) library.startPosition(item) else 0L
+        val start = if (resume && settings.resumeEnabled && !item.isLive) {
+            library.startPosition(item, remotePosition(item))
+        } else {
+            0L
+        }
         library.touch(item, start)
+        library.noteListPlay(session.listId, item)
         val nearEnd = item.durationMs > 0L && start >= item.durationMs - 2_000L
         val avi = item.format.equals("AVI", true)
-        if (!item.isLive && start > 1_000L && !nearEnd && !avi) player.seekTo(start)
+        val offerResume = askResume && resume && settings.resumeEnabled &&
+            !item.isLive && start >= 5_000L && !nearEnd
         player.setPlaybackSpeed(speed)
-        player.play()
-        if (!item.isLive && start > 1_000L && !nearEnd && avi) {
-            player.seekTo(start)
+        if (offerResume) {
+            resumeOffer = start to item.durationMs
+            player.pause()
+        } else {
+            resumeOffer = null
+            if (!item.isLive && start > 1_000L && !nearEnd && !avi) player.seekTo(start)
+            player.play()
+            if (!item.isLive && start > 1_000L && !nearEnd && avi) {
+                player.seekTo(start)
+            }
         }
         Log.i("GrokPlayer", "open ${item.format} prepare ${android.os.SystemClock.elapsedRealtime() - openedAt}ms")
         controls = true
@@ -429,16 +506,58 @@ fun PlayerScreen(
                     skipNextUp &&
                     !item.isLive &&
                     index < session.queue.lastIndex &&
+                    session.queue[index + 1].isVod() &&
                     duration > 20_000L &&
-                    remain in 1L..15_000L
+                    remain in 1L..10_000L
             }
             delay(250)
         }
     }
 
-    LaunchedEffect(controls, hideGen, playlistOpen, speedOpen, subtitleOpen) {
-        if (!controls || playlistOpen || speedOpen || subtitleOpen) return@LaunchedEffect
-        delay(settings.hideControlsSeconds.coerceAtLeast(1) * 1000L)
+    LaunchedEffect(selectedSubtitleKey, ytCaptions, index) {
+        val option = subtitleOptions.firstOrNull { it.key == selectedSubtitleKey }
+        val track = if (option == null || option.isOff) {
+            null
+        } else {
+            YouTubeCaptions.match(ytCaptions, option.language, option.label)
+                ?: ytCaptions.firstOrNull { option.key.startsWith("yt:${it.language}") }
+        }
+        if (track == null) {
+            ytLines = emptyList()
+            return@LaunchedEffect
+        }
+        val lines = track.lines.ifEmpty {
+            withContext(Dispatchers.IO) {
+                YouTubeCaptions.fetchLines(context, track, video.referer ?: "https://www.youtube.com/", video.userAgent)
+            }
+        }
+        ytLines = lines
+        Log.i("GrokPlayer", "caption overlay lang=${track.language} lines=${lines.size}")
+        if (lines.isEmpty()) {
+            toast = "Altyazı yüklenemedi"
+        }
+    }
+
+    LaunchedEffect(ytLines) {
+        if (ytLines.isEmpty()) return@LaunchedEffect
+        while (true) {
+            captionPos = player.currentPosition
+            delay(50)
+        }
+    }
+
+    LaunchedEffect(ytLines, playerView) {
+        val hide = ytLines.isNotEmpty()
+        playerView?.subtitleView?.visibility = if (hide) View.GONE else View.VISIBLE
+    }
+
+    LaunchedEffect(controls, hideGen, playlistOpen, speedOpen, subtitleOpen, audioOpen) {
+        if (!controls || playlistOpen || speedOpen || subtitleOpen || audioOpen) {
+            return@LaunchedEffect
+        }
+        val wait = settings.hideControlsSeconds.coerceAtLeast(2) * 1000L
+        delay(wait)
+        if (playlistOpen || speedOpen || subtitleOpen || audioOpen) return@LaunchedEffect
         controls = false
         previewVisible = false
     }
@@ -488,7 +607,8 @@ fun PlayerScreen(
             ThumbnailCache.save(context, key, frame, maxWidth = ThumbnailCache.HERO_WIDTH)
             ThumbnailCache.save(context, key, frame, maxWidth = ThumbnailCache.TILE_WIDTH)
         }
-        library.markPlayed(video.id, player.currentPosition)
+        library.markPlayed(video, player.currentPosition)
+        library.noteListPlay(session.listId, video)
         onClose(video.id)
     }
 
@@ -521,12 +641,14 @@ fun PlayerScreen(
     }
 
     fun playIndex(newIndex: Int) {
-        library.markPlayed(session.queue[index].id, player.currentPosition)
+        val current = session.queue[index]
+        library.markPlayed(current, player.currentPosition)
+        library.noteListPlay(session.listId, current)
         index = newIndex
     }
 
     fun openSubtitleMenu() {
-        val options = listSubtitleOptions(player.currentTracks)
+        val options = mergeSubtitleOptions(listSubtitleOptions(player.currentTracks), ytCaptions)
         subtitleOptions = options
         subtitleCursor = options.indexOfFirst { it.key == selectedSubtitleKey }.coerceAtLeast(0)
         subtitleOpen = true
@@ -542,32 +664,89 @@ fun PlayerScreen(
         showControls()
     }
 
-    fun handleSubtitleKey(event: androidx.compose.ui.input.key.KeyEvent): Boolean {
-        if (!subtitleOpen) return false
-        return when (event.key) {
-            Key.DirectionDown -> {
-                if (subtitleOptions.isNotEmpty()) {
-                    subtitleCursor = (subtitleCursor + 1).coerceAtMost(subtitleOptions.lastIndex)
-                }
-                true
-            }
-            Key.DirectionUp -> {
-                subtitleCursor = (subtitleCursor - 1).coerceAtLeast(0)
-                true
-            }
-            Key.DirectionCenter, Key.Enter -> {
-                subtitleOptions.getOrNull(subtitleCursor)?.let { pickSubtitle(it) }
-                true
-            }
-            Key.DirectionLeft, Key.DirectionRight -> true
-            else -> false
+    fun openAudioMenu() {
+        val options = mergeAudioOptions(listAudioOptions(player.currentTracks), ytAudios)
+        audioOptions = options
+        if (options.isEmpty()) {
+            muted = !muted
+            player.volume = if (muted) 0f else 1f
+            toast = if (muted) "Ses kapalı" else "Ses açık"
+            showControls()
+            return
         }
+        selectedAudioKey = when {
+            activeDubId != null -> "yt-a:$activeDubId"
+            else -> activeAudioKey(player.currentTracks, options) ?: selectedAudioKey
+        }
+        audioCursor = options.indexOfFirst { it.key == selectedAudioKey }.let { idx ->
+            if (idx >= 0) idx else options.indexOfFirst { it.language == settings.audioLang }.coerceAtLeast(0)
+        }
+        audioOpen = true
+        showControls()
+    }
+
+    fun switchToDub(track: YtAudioTrack) {
+        val prepared = lastPrepared ?: return
+        val position = player.currentPosition
+        val resume = player.playWhenReady
+        activeDubId = track.id
+        StreamHttp.applyPlayHeaders(httpFactory, prepared.referer, prepared.userAgent)
+        val audioItem = MediaItem.Builder()
+            .setUri(track.url)
+            .setMimeType(YouTubeAudio.mimeType(track))
+            .build()
+        val videoSource = mediaSourceFactory.createMediaSource(prepared.mediaItem)
+        val audioSource = mediaSourceFactory.createMediaSource(audioItem)
+        player.setMediaSource(MergingMediaSource(true, videoSource, audioSource))
+        player.prepare()
+        player.seekTo(position)
+        player.playWhenReady = resume
+        Log.i("GrokPlayer", "dub ${track.id} ${track.menuLabel()} mime=${track.mime.take(32)}")
+    }
+
+    fun restoreDefaultAudio() {
+        val prepared = lastPrepared ?: return
+        val position = player.currentPosition
+        val resume = player.playWhenReady
+        activeDubId = null
+        StreamHttp.applyPlayHeaders(httpFactory, prepared.referer, prepared.userAgent)
+        player.setMediaItem(prepared.mediaItem)
+        player.prepare()
+        player.seekTo(position)
+        player.playWhenReady = resume
+    }
+
+    fun pickAudio(option: AudioOption) {
+        selectedAudioKey = option.key
+        audioOpen = false
+        if (muted) {
+            muted = false
+            player.volume = 1f
+        }
+        val yt = ytAudios.firstOrNull { option.key == "yt-a:${it.id}" }
+        when {
+            yt != null && !yt.isDefault -> switchToDub(yt)
+            yt != null && yt.isDefault -> restoreDefaultAudio()
+            else -> applyAudioChoice(player, option)
+        }
+        toast = "Ses · ${option.label}"
+        showControls()
     }
 
     fun handleBack(): Boolean {
         return when {
+            resumeOffer != null -> {
+                resumeOffer = null
+                player.seekTo(0)
+                player.play()
+                true
+            }
             speedOpen -> {
                 speedOpen = false
+                true
+            }
+            audioOpen -> {
+                audioOpen = false
                 true
             }
             subtitleOpen -> {
@@ -595,11 +774,10 @@ fun PlayerScreen(
     InterceptBack { handleBack() }
     BackHandler { handleBack() }
 
-    LaunchedEffect(subtitleOpen) {
-        if (subtitleOpen) {
-            delay(16)
-            runCatching { playerRootFocus.requestFocus() }
-        }
+    LaunchedEffect(subtitleOpen, audioOpen) {
+        if (subtitleOpen || audioOpen) return@LaunchedEffect
+        delay(16)
+        runCatching { playerRootFocus.requestFocus() }
     }
 
     Box(
@@ -612,8 +790,16 @@ fun PlayerScreen(
                 if (event.key == Key.Back || event.key == Key.Escape) {
                     return@onPreviewKeyEvent handleBack()
                 }
-                if (handleSubtitleKey(event)) return@onPreviewKeyEvent true
-                if (playlistOpen || speedOpen) return@onPreviewKeyEvent false
+                if (playlistOpen || speedOpen || audioOpen || subtitleOpen) return@onPreviewKeyEvent false
+                val dpad = event.key == Key.DirectionCenter ||
+                    event.key == Key.Enter ||
+                    event.key == Key.DirectionDown ||
+                    event.key == Key.DirectionUp ||
+                    event.key == Key.DirectionLeft ||
+                    event.key == Key.DirectionRight
+                if (controls && dpad) {
+                    showControls()
+                }
                 if (nextUpVisible && !nextUpFocused && event.key == Key.DirectionDown) {
                     nextUpFocused = true
                     showControls()
@@ -652,7 +838,7 @@ fun PlayerScreen(
                     false
                 }
             }
-            .focusProperties { canFocus = !speedOpen && !playlistOpen }
+            .focusProperties { canFocus = !speedOpen && !playlistOpen && !audioOpen && !subtitleOpen }
             .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {
                 controls = !controls
             },
@@ -685,6 +871,19 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
+        if (ytLines.isNotEmpty() && selectedSubtitleKey != SubtitleOption.Off.key) {
+            YtCaptionOverlay(
+                lines = ytLines,
+                positionMs = captionPos,
+                fontSp = settings.captionSp,
+                lifted = controls || playlistOpen,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 72.dp),
+            )
+        }
+
         if (controls || playlistOpen) {
             Box(
                 Modifier
@@ -707,7 +906,7 @@ fun PlayerScreen(
                 atLiveEdge = atLiveEdge,
                 liveOffsetMs = liveOffsetMs,
             )
-            if (!playlistOpen && !speedOpen && !subtitleOpen) {
+            if (!playlistOpen && !speedOpen && !subtitleOpen && !audioOpen) {
                 BottomControls(
                     playing = playing,
                     position = position,
@@ -745,17 +944,17 @@ fun PlayerScreen(
                         showControls()
                     },
                     onSeek = { seekBy(it) },
-                    onPrev = { if (index > 0) playIndex(index - 1) },
-                    onNext = { if (index < session.queue.lastIndex) playIndex(index + 1) },
-                    onAudio = {
-                        muted = !muted
-                        player.volume = if (muted) 0f else 1f
-                        toast = if (muted) "Ses kapalı" else "Ses açık"
-                        showControls()
+                    onPrev = {
+                        if (index > 0 && session.queue[index - 1].isVod()) playIndex(index - 1)
                     },
+                    onNext = {
+                        if (index < session.queue.lastIndex && session.queue[index + 1].isVod()) playIndex(index + 1)
+                    },
+                    onAudio = { openAudioMenu() },
                     onCaption = { openSubtitleMenu() },
                     onSpeed = { speedOpen = true },
                     onList = { playlistOpen = true },
+                    onBarFocus = { barFocused = it },
                 )
             }
         }
@@ -773,13 +972,55 @@ fun PlayerScreen(
             )
         }
 
+        if (audioOpen) {
+            ModalMenu(
+                title = "Ses",
+                onDismiss = { audioOpen = false },
+                startIndex = audioCursor,
+                width = 300.dp,
+                absorbOpeningOk = false,
+                actions = audioOptions.map { option ->
+                    ModalAction(option.label) { pickAudio(option) }
+                },
+            )
+        }
+
         if (subtitleOpen) {
-            SubtitleMenu(
-                options = subtitleOptions,
-                selectedKey = selectedSubtitleKey,
-                cursor = subtitleCursor,
-                onSelect = { pickSubtitle(it) },
+            ModalMenu(
+                title = "Altyazı",
                 onDismiss = { subtitleOpen = false },
+                startIndex = subtitleCursor,
+                width = 300.dp,
+                absorbOpeningOk = false,
+                actions = subtitleOptions.map { option ->
+                    ModalAction(option.label) { pickSubtitle(option) }
+                },
+            )
+        }
+
+        resumeOffer?.let { (startMs, durationMs) ->
+            com.grokplayer.tv.ui.devices.PcResumeOverlay(
+                offer = com.grokplayer.tv.data.link.ResumeOffer(
+                    title = video.title,
+                    seconds = startMs / 1000.0,
+                    duration = (durationMs.takeIf { it > startMs } ?: (startMs * 2)).coerceAtLeast(startMs + 1_000L) / 1000.0,
+                ),
+                onContinue = {
+                    val avi = video.format.equals("AVI", true)
+                    resumeOffer = null
+                    if (!avi) player.seekTo(startMs)
+                    player.play()
+                    if (avi) player.seekTo(startMs)
+                },
+                onStartOver = {
+                    resumeOffer = null
+                    player.seekTo(0)
+                    player.play()
+                },
+                onDismiss = {
+                    resumeOffer = null
+                    closePlayer()
+                },
             )
         }
 
@@ -799,7 +1040,7 @@ fun PlayerScreen(
         if (nextUpVisible && index < session.queue.lastIndex) {
             val upcoming = session.queue[index + 1]
             NextUpCard(
-                title = upcoming.title,
+                video = upcoming,
                 remainingMs = (duration - position).coerceAtLeast(0L),
                 focused = nextUpFocused,
                 playFocus = nextUpFocus,
@@ -840,8 +1081,8 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(controls, playlistOpen, speedOpen, subtitleOpen, live, duration) {
-        if (playlistOpen || speedOpen || subtitleOpen) return@LaunchedEffect
+    LaunchedEffect(controls, playlistOpen, speedOpen, subtitleOpen, audioOpen) {
+        if (playlistOpen || speedOpen || subtitleOpen || audioOpen) return@LaunchedEffect
         delay(30)
         if (!controls) {
             runCatching { playerRootFocus.requestFocus() }
@@ -911,7 +1152,7 @@ private fun TopBar(
 
 @Composable
 private fun NextUpCard(
-    title: String,
+    video: LibraryVideo,
     remainingMs: Long,
     focused: Boolean,
     playFocus: FocusRequester,
@@ -928,7 +1169,21 @@ private fun NextUpCard(
             .padding(12.dp),
     ) {
         Text("Sıradaki", style = GrokType.eyebrow, color = GrokYellow)
-        Text(title, style = GrokType.cardTitle, color = GrokWhite, modifier = Modifier.padding(top = 4.dp), maxLines = 2)
+        VideoPoster(
+            uri = video.uri,
+            title = video.title,
+            focused = false,
+            path = video.path,
+            format = video.format,
+            posterUrl = video.posterUrl,
+            durationMs = video.durationMs,
+            originUrl = video.originUrl,
+            modifier = Modifier
+                .padding(top = 8.dp)
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f),
+        )
+        Text(video.title, style = GrokType.cardTitle, color = GrokWhite, modifier = Modifier.padding(top = 8.dp), maxLines = 2)
         Text(
             "${remainingMs.formatClock()} · Aşağı ile seç",
             style = GrokType.cardMeta,
@@ -1002,6 +1257,7 @@ private fun BottomControls(
     onCaption: () -> Unit,
     onSpeed: () -> Unit,
     onList: () -> Unit,
+    onBarFocus: (Boolean) -> Unit = {},
 ) {
     val progress = if (live) {
         if (atLiveEdge) 1f else if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 0.97f) else 0.7f
@@ -1015,6 +1271,7 @@ private fun BottomControls(
     Column(
         Modifier
             .fillMaxSize()
+            .onFocusChanged { onBarFocus(it.hasFocus) }
             .padding(start = 36.dp, end = 36.dp, bottom = 16.dp),
         verticalArrangement = Arrangement.Bottom,
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1202,17 +1459,39 @@ private fun selectedAudioFormat(tracks: Tracks): androidx.media3.common.Format? 
     return null
 }
 
-private fun mediaItemFor(video: com.grokplayer.tv.data.LibraryVideo): MediaItem {
+private data class PreparedPlay(
+    val mediaItem: MediaItem,
+    val referer: String?,
+    val userAgent: String?,
+    val captions: List<YtCaptionTrack> = emptyList(),
+    val audios: List<YtAudioTrack> = emptyList(),
+)
+
+private fun preparePlay(context: android.content.Context, video: com.grokplayer.tv.data.LibraryVideo): PreparedPlay {
     val raw = video.uri.toString()
-    val resolved = if (raw.startsWith("http")) StreamProbe.playUrl(raw) else raw
+    val lanFile = raw.contains("/v1/file")
+    val youtubeId = YouTubeResolver.videoId(raw)
+        ?: video.originUrl?.let { YouTubeResolver.videoId(it) }
+    val youtube = if (!lanFile && youtubeId != null) {
+        val page = video.originUrl?.takeIf { YouTubeResolver.videoId(it) != null } ?: raw
+        YouTubeResolver.resolve(context, youtubeId, page)
+    } else {
+        null
+    }
+    val resolved = when {
+        lanFile -> raw
+        youtube != null -> youtube.playUrl
+        raw.startsWith("http") -> StreamProbe.playUrl(raw)
+        else -> raw
+    }
     val builder = MediaItem.Builder().setUri(resolved)
+    Log.i(
+        "GrokPlayer",
+        "open mime hls=${StreamProbe.isHls(resolved)} dash=${StreamProbe.isDash(resolved)} url=${resolved.take(96)}",
+    )
     when {
-        StreamProbe.mimeForUrl(resolved) != null -> {
-            val mime = StreamProbe.mimeForUrl(resolved)
-            builder.setMimeType(
-                if (mime!!.contains("mpegURL")) MimeTypes.APPLICATION_M3U8 else MimeTypes.APPLICATION_MPD,
-            )
-        }
+        StreamProbe.isHls(resolved) -> builder.setMimeType(MimeTypes.APPLICATION_M3U8)
+        StreamProbe.isDash(resolved) -> builder.setMimeType(MimeTypes.APPLICATION_MPD)
         resolved.endsWith(".ts", ignoreCase = true) || video.format.equals("TS", true) -> {
             builder.setMimeType(MimeTypes.VIDEO_MP2T)
         }
@@ -1221,10 +1500,43 @@ private fun mediaItemFor(video: com.grokplayer.tv.data.LibraryVideo): MediaItem 
         }
     }
     val sidecars = sidecarSubtitleConfigs(video)
-    if (sidecars.isNotEmpty()) {
-        builder.setSubtitleConfigurations(sidecars)
+    val youtubeSubs = youtube?.captions.orEmpty().mapNotNull { track ->
+        val file = YouTubeCaptions.writeVtt(context, track) ?: return@mapNotNull null
+        MediaItem.SubtitleConfiguration.Builder(android.net.Uri.fromFile(file))
+            .setMimeType(MimeTypes.TEXT_VTT)
+            .setLanguage(track.language)
+            .setLabel(track.displayLabel())
+            .setId("yt:${track.language}:${if (track.auto) "asr" else "manual"}")
+            .setSelectionFlags(0)
+            .build()
     }
-    return builder.build()
+    val subs = sidecars + youtubeSubs
+    if (subs.isNotEmpty()) {
+        builder.setSubtitleConfigurations(subs)
+    }
+    return PreparedPlay(
+        mediaItem = builder.build(),
+        referer = youtube?.referer ?: video.referer,
+        userAgent = youtube?.userAgent ?: video.userAgent,
+        captions = youtube?.captions.orEmpty(),
+        audios = youtube?.audios.orEmpty(),
+    )
+}
+
+private fun preferSidecarAudio(player: ExoPlayer, language: String?) {
+    val groups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+    if (groups.size < 2) return
+    val match = groups.indexOfLast { group ->
+        val lang = group.getTrackFormat(0).language
+        !language.isNullOrBlank() && !lang.isNullOrBlank() &&
+            lang.startsWith(language.take(2), ignoreCase = true)
+    }.let { if (it >= 0) it else groups.lastIndex }
+    val chosen = groups[match]
+    if (chosen.isTrackSelected(0)) return
+    player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+        .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+        .setOverrideForType(TrackSelectionOverride(chosen.mediaTrackGroup, listOf(0)))
+        .build()
 }
 
 private fun fitResizeMode(mode: Int): Int = when (mode) {
@@ -1573,57 +1885,46 @@ private fun SpeedMenu(
 }
 
 @Composable
-private fun SubtitleMenu(
-    options: List<SubtitleOption>,
-    selectedKey: String,
-    cursor: Int,
-    onSelect: (SubtitleOption) -> Unit,
-    onDismiss: () -> Unit,
+private fun YtCaptionOverlay(
+    lines: List<YtCaptionLine>,
+    positionMs: Long,
+    fontSp: Float,
+    lifted: Boolean,
+    modifier: Modifier = Modifier,
 ) {
-    com.grokplayer.tv.ui.theme.RememberFocusLock()
-    InterceptBack { onDismiss(); true }
-    BackHandler(onBack = onDismiss)
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(GrokInk.copy(alpha = 0.55f))
-            .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) { onDismiss() }
-            .focusProperties { canFocus = false },
-        contentAlignment = Alignment.Center,
+    val visible = YouTubeCaptions.visibleLines(lines, positionMs)
+    if (visible.isEmpty()) return
+    Column(
+        modifier.padding(bottom = if (lifted) 196.dp else 36.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Column(
-            Modifier
-                .width(300.dp)
-                .background(GrokSurface, RoundedCornerShape(12.dp))
-                .border(1.dp, GrokYellow.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
-                .padding(10.dp)
-                .focusProperties { canFocus = false },
-        ) {
-            Text("Altyazı", style = GrokType.section, color = GrokWhite, modifier = Modifier.padding(8.dp))
-            options.forEachIndexed { index, option ->
-                val isCursor = index == cursor
-                val isSelected = option.key == selectedKey
-                Text(
-                    text = option.label,
-                    style = GrokType.button,
-                    color = if (isCursor || isSelected) GrokInk else GrokWhite,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(
-                            when {
-                                isCursor -> GrokYellow
-                                isSelected -> GrokYellow.copy(alpha = 0.35f)
-                                else -> Color.Transparent
-                            },
-                            RoundedCornerShape(6.dp),
-                        )
-                        .clickable(
-                            indication = null,
-                            interactionSource = remember { MutableInteractionSource() },
-                        ) { onSelect(option) }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                )
+        visible.forEach { line ->
+            val spoken = line.words.filter { positionMs + 40L >= it.startMs }
+            if (spoken.isEmpty()) return@forEach
+            val currentStart = spoken.last().startMs
+            Row(
+                Modifier
+                    .padding(vertical = 3.dp)
+                    .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 14.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                spoken.forEachIndexed { index, word ->
+                    val current = word.startMs == currentStart
+                    Text(
+                        text = word.text + if (index == spoken.lastIndex) "" else " ",
+                        style = TextStyle(
+                            fontSize = fontSp.sp,
+                            fontWeight = if (current) FontWeight.Bold else FontWeight.SemiBold,
+                            color = if (current) GrokYellow else GrokWhite,
+                            shadow = Shadow(color = Color.Black, offset = Offset(0f, 2f), blurRadius = 6f),
+                        ),
+                    )
+                }
             }
         }
     }
 }
+
+
