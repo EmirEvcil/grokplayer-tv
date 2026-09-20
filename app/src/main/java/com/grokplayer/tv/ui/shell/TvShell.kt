@@ -320,9 +320,9 @@ fun TvShell() {
                                 resumeFocus = focus,
                                 railFocus = rail,
                                 library = library,
-                                onPlay = { queue, index, resume ->
+                                onPlay = { queue, index, resume, ask ->
                                     resumePlayback = resume
-                                    promptResume = false
+                                    promptResume = ask
                                     session = PlaySession(queue, index)
                                 },
                                 focusItemId = focusHomeId,
@@ -339,9 +339,9 @@ fun TvShell() {
                                 localVideos = library.videos,
                                 playerOpen = session != null,
                                 watch = library.watch,
-                                onPlay = { queue, index, resume, listId ->
+                                onPlay = { queue, index, resume, ask, listId ->
                                     resumePlayback = resume
-                                    promptResume = resume
+                                    promptResume = ask
                                     session = PlaySession(queue, index, listId)
                                 },
                                 onNotice = { notice = it },

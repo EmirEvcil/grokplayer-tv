@@ -137,6 +137,229 @@ class VodDownloaderTest {
     }
 
     @Test
+    fun youtubeFmp4PlaylistIncludesInitMap() {
+        val body = """
+            #EXTM3U
+            #EXT-X-VERSION:7
+            #EXT-X-TARGETDURATION:5
+            #EXT-X-MAP:URI="init.mp4"
+            #EXT-X-ENDLIST
+            #EXTINF:5.0,
+            seg0.m4s
+            #EXTINF:5.0,
+            seg1.m4s
+        """.trimIndent()
+        val parts = hlsMediaParts(body)
+        assertEquals("init.mp4", parts.mapUri)
+        assertEquals(listOf("seg0.m4s", "seg1.m4s"), parts.segments)
+        assertTrue(parts.fragmentedMp4)
+    }
+
+    @Test
+    fun mpegTsPlaylistIsNotFragmentedMp4() {
+        val body = """
+            #EXTM3U
+            #EXT-X-TARGETDURATION:2
+            #EXT-X-ENDLIST
+            #EXTINF:2,
+            a.ts
+            #EXTINF:2,
+            b.ts
+        """.trimIndent()
+        val parts = hlsMediaParts(body)
+        assertEquals(null, parts.mapUri)
+        assertEquals(listOf("a.ts", "b.ts"), parts.segments)
+        assertTrue(!parts.fragmentedMp4)
+    }
+
+    @Test
+    fun fmp4HlsWritesInitThenSegmentsAsMp4() {
+        val init = byteArrayOf(0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109) + ByteArray(12)
+        val seg = byteArrayOf(0, 0, 0, 16, 109, 111, 111, 102) + ByteArray(8)
+        withServer { port, add ->
+            add("/master.m3u8") {
+                """
+                #EXTM3U
+                #EXT-X-STREAM-INF:BANDWIDTH=1000,RESOLUTION=640x360
+                /media.m3u8
+                """.trimIndent().toByteArray()
+            }
+            add("/media.m3u8") {
+                """
+                #EXTM3U
+                #EXT-X-TARGETDURATION:5
+                #EXT-X-MAP:URI="init.mp4"
+                #EXT-X-ENDLIST
+                #EXTINF:5,
+                /a.m4s
+                """.trimIndent().toByteArray()
+            }
+            add("/init.mp4") { init }
+            add("/a.m4s") { seg }
+            StreamHttp.attach(OkHttpClient())
+            val dir = File.createTempFile("ytd", "dir").apply { delete(); mkdirs(); deleteOnExit() }
+            val dest = File(dir, "clip.ts")
+            val file = VodDownloader.download(
+                url = "http://127.0.0.1:$port/master.m3u8",
+                dest = dest,
+                maxHeight = 720,
+                cancelled = { false },
+                onProgress = {},
+            )
+            assertEquals("m3u8", file.extension.lowercase())
+            assertTrue(isPlayableDownload(file))
+            val text = file.readText()
+            assertTrue(text.contains("v.m3u8"))
+            val video = File(dir, "v.m3u8")
+            assertTrue(video.isFile)
+            assertTrue(video.readText().contains("v-init.seg"))
+            assertEquals((init.size).toLong(), File(dir, "v-init.seg").length())
+            assertEquals((seg.size).toLong(), File(dir, "v-0000.seg").length())
+            assertEquals(5_000L, localHlsDurationMs(file))
+        }
+    }
+
+    @Test
+    fun fmp4HlsWithAudioGroupWritesMp4AndM4a() {
+        val init = byteArrayOf(0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109) + ByteArray(20)
+        val vseg = byteArrayOf(0, 0, 0, 16, 109, 111, 111, 102) + ByteArray(20)
+        val ainit = byteArrayOf(0, 0, 0, 24, 102, 116, 121, 112, 77, 52, 65, 32) + ByteArray(20)
+        val aseg = byteArrayOf(0, 0, 0, 16, 109, 111, 111, 102) + ByteArray(16)
+        withServer { port, add ->
+            add("/master.m3u8") {
+                """
+                #EXTM3U
+                #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Turkish",DEFAULT=NO,AUTOSELECT=YES,LANGUAGE="tr",URI="/audio-tr.m3u8"
+                #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="original",DEFAULT=YES,AUTOSELECT=YES,LANGUAGE="en",URI="/audio-en.m3u8"
+                #EXT-X-STREAM-INF:BANDWIDTH=1000,RESOLUTION=640x360,AUDIO="aud"
+                /video.m3u8
+                """.trimIndent().toByteArray()
+            }
+            add("/video.m3u8") {
+                """
+                #EXTM3U
+                #EXT-X-TARGETDURATION:5
+                #EXT-X-MAP:URI="init.mp4"
+                #EXT-X-ENDLIST
+                #EXTINF:5,
+                /v.m4s
+                """.trimIndent().toByteArray()
+            }
+            add("/audio-tr.m3u8") {
+                """
+                #EXTM3U
+                #EXT-X-TARGETDURATION:5
+                #EXT-X-MAP:URI="ainit.mp4"
+                #EXT-X-ENDLIST
+                #EXTINF:5,
+                /a.m4s
+                """.trimIndent().toByteArray()
+            }
+            add("/audio-en.m3u8") {
+                """
+                #EXTM3U
+                #EXT-X-TARGETDURATION:5
+                #EXT-X-MAP:URI="ainit.mp4"
+                #EXT-X-ENDLIST
+                #EXTINF:5,
+                /a.m4s
+                """.trimIndent().toByteArray()
+            }
+            add("/init.mp4") { init }
+            add("/v.m4s") { vseg }
+            add("/ainit.mp4") { ainit }
+            add("/a.m4s") { aseg }
+            StreamHttp.attach(OkHttpClient())
+            val dir = File.createTempFile("yta", "dir").apply { delete(); mkdirs(); deleteOnExit() }
+            val dest = File(dir, "clip.ts")
+            val file = VodDownloader.download(
+                url = "http://127.0.0.1:$port/master.m3u8",
+                dest = dest,
+                maxHeight = 720,
+                cancelled = { false },
+                onProgress = {},
+            )
+            assertEquals("m3u8", file.extension.lowercase())
+            assertTrue(isPlayableDownload(file))
+            val master = file.readText()
+            assertTrue(master.contains("a-en.m3u8"))
+            assertTrue(master.contains("a-tr.m3u8"))
+            val defaultLine = master.lineSequence().first { it.contains("LANGUAGE=\"en\"") }
+            assertTrue(defaultLine.contains("DEFAULT=YES"))
+            val dubLine = master.lineSequence().first { it.contains("LANGUAGE=\"tr\"") }
+            assertTrue(dubLine.contains("DEFAULT=NO"))
+            assertTrue(File(dir, "a-en.m3u8").isFile)
+            assertTrue(File(dir, "a-tr.m3u8").isFile)
+            assertEquals(5_000L, localHlsDurationMs(file))
+        }
+    }
+
+    @Test
+    fun moofWithoutFtypIsNotPlayable() {
+        val frag = File.createTempFile("frag", ".ts")
+        frag.writeBytes(byteArrayOf(0, 0, 0, 16, 109, 111, 111, 102) + ByteArray(40))
+        frag.deleteOnExit()
+        assertEquals("mp4", sniffContainer(frag))
+        assertTrue(!isPlayableDownload(frag))
+        assertEquals(null, localPlaybackFile(frag.absolutePath, null))
+    }
+
+    @Test
+    fun ftypNamedTsIsPlayableLocalFile() {
+        val mp4 = File.createTempFile("okv", ".ts")
+        mp4.writeBytes(byteArrayOf(0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109) + ByteArray(40))
+        mp4.deleteOnExit()
+        assertEquals("mp4", sniffContainer(mp4))
+        assertTrue(isPlayableDownload(mp4))
+        assertEquals(mp4.absolutePath, localPlaybackFile(mp4.absolutePath, null)?.absolutePath)
+    }
+
+    @Test
+    fun sniffDetectsFtypAndTsSync() {
+        val mp4 = File.createTempFile("box", ".ts")
+        mp4.writeBytes(byteArrayOf(0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109))
+        mp4.deleteOnExit()
+        assertEquals("mp4", sniffContainer(mp4))
+        val ts = File.createTempFile("mpeg", ".bin")
+        ts.writeBytes(byteArrayOf(0x47, 0x40, 0x00, 0x10) + ByteArray(40))
+        ts.deleteOnExit()
+        assertEquals("ts", sniffContainer(ts))
+        assertTrue(isPlayableDownload(ts))
+    }
+
+    @Test
+    fun pickDefaultAudioIgnoresFirstAutoselectDub() {
+        val tracks = com.grokplayer.tv.data.scan.YouTubeCaptions.parseExtXMedia(
+            """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Turkish",DEFAULT=NO,AUTOSELECT=YES,LANGUAGE="tr",URI="tr.m3u8"
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="original",DEFAULT=YES,AUTOSELECT=YES,LANGUAGE="en",URI="en.m3u8"
+            """.trimIndent(),
+        )
+        val picked = pickDefaultAudio(tracks, "aud", null)
+        assertEquals("en", picked?.language)
+        assertEquals("en.m3u8", picked?.uri)
+    }
+
+    @Test
+    fun rewriteMediaPlaylistKeepsInitAndForcesVod() {
+        val body = """
+            #EXTM3U
+            #EXT-X-TARGETDURATION:5
+            #EXT-X-MAP:URI="init.mp4"
+            #EXTINF:5.0,
+            seg0.m4s
+        """.trimIndent()
+        val rewritten = rewriteMediaPlaylist(body, listOf("v-init.seg", "v-0000.seg"))
+        assertTrue(rewritten.contains("#EXT-X-MAP:URI=\"v-init.seg\""))
+        assertTrue(rewritten.contains("v-0000.seg"))
+        assertTrue(!rewritten.contains("seg0.m4s"))
+        assertTrue(rewritten.contains("#EXT-X-PLAYLIST-TYPE:VOD"))
+        assertTrue(rewritten.contains("#EXT-X-ENDLIST"))
+        assertEquals(5_000L, hlsDurationMs(body))
+    }
+
+    @Test
     fun hlsReportsProgressDuringSegmentsNotOnlyAtTheEnd() {
         val seg1 = ByteArray(80_000) { 1 }
         val seg2 = ByteArray(80_000) { 2 }

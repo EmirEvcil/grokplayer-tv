@@ -12,6 +12,7 @@ class YouTubeResolverTest {
         assertEquals("m7lJeL1DJjA", YouTubeResolver.videoId("https://m.youtube.com/watch?v=m7lJeL1DJjA&t=12"))
         assertEquals("m7lJeL1DJjA", YouTubeResolver.videoId("https://www.youtube.com/embed/m7lJeL1DJjA"))
         assertEquals("m7lJeL1DJjA", YouTubeResolver.videoId("m7lJeL1DJjA"))
+        assertEquals("m7lJeL1DJjA", YouTubeResolver.videoId("https://www.youtube.com/live/m7lJeL1DJjA"))
     }
 
     @Test

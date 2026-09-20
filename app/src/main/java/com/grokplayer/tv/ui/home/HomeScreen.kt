@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -25,7 +24,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Replay
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,7 +39,6 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.grokplayer.tv.R
@@ -50,6 +47,7 @@ import com.grokplayer.tv.data.LibraryVideo
 import com.grokplayer.tv.data.ThumbnailCache
 import com.grokplayer.tv.data.formatClock
 import com.grokplayer.tv.ui.components.EmptyState
+import com.grokplayer.tv.ui.components.HeroButton
 import com.grokplayer.tv.ui.components.VideoPoster
 import com.grokplayer.tv.ui.theme.GrokInk
 import com.grokplayer.tv.ui.theme.GrokLine
@@ -65,7 +63,7 @@ fun HomeScreen(
     resumeFocus: FocusRequester,
     railFocus: FocusRequester,
     library: LibraryStore,
-    onPlay: (List<LibraryVideo>, Int, Boolean) -> Unit,
+    onPlay: (List<LibraryVideo>, Int, Boolean, Boolean) -> Unit,
     focusItemId: String? = null,
     onFocusConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -216,7 +214,7 @@ fun HomeScreen(
                         },
                     onClick = {
                         lastLaunch = HomeLaunch.Resume
-                        onPlay(queue, heroIndex, true)
+                        onPlay(queue, heroIndex, true, false)
                     },
                 )
                 HeroButton(
@@ -230,7 +228,7 @@ fun HomeScreen(
                         },
                     onClick = {
                         lastLaunch = HomeLaunch.Replay
-                        onPlay(queue, heroIndex, false)
+                        onPlay(queue, heroIndex, false, false)
                     },
                 )
             }
@@ -274,7 +272,7 @@ fun HomeScreen(
                                     lastLaunch = HomeLaunch.Card
                                     lastCardId = item.id
                                     val (q, i) = com.grokplayer.tv.data.vodQueue(recents, index)
-                                    onPlay(q, i, true)
+                                    onPlay(q, i, true, true)
                                 },
                             )
                         }
@@ -282,32 +280,6 @@ fun HomeScreen(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun HeroButton(
-    label: String,
-    icon: ImageVector,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val interaction = remember { MutableInteractionSource() }
-    val focused = interaction.collectIsFocusedAsState().value
-    val shape = RoundedCornerShape(8.dp)
-    val fill = if (focused) GrokYellow else Color.Black.copy(alpha = 0.28f)
-    Row(
-        modifier = modifier
-            .clip(shape)
-            .background(fill)
-            .then(if (focused) Modifier else Modifier.border(1.5.dp, GrokLine, shape))
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 18.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Icon(icon, null, tint = if (focused) GrokInk else GrokWhite, modifier = Modifier.size(18.dp))
-        Text(label, style = GrokType.button, color = if (focused) GrokInk else GrokWhite)
     }
 }
 

@@ -20,6 +20,8 @@ object YouTubeResolver {
             ?: "https://www.youtube.com/watch?v=$id"
     }
 
+    fun posterUrl(id: String): String = "https://i.ytimg.com/vi/$id/hqdefault.jpg"
+
     fun videoId(raw: String): String? {
         val text = raw.trim()
         if (idPattern.matches(text)) return text
@@ -113,7 +115,14 @@ object YouTubeResolver {
         val status = root.optJSONObject("playabilityStatus")?.optString("status").orEmpty()
         val details = root.optJSONObject("videoDetails")
         val title = details?.optString("title").orEmpty().ifBlank { id }
-        val live = details?.optBoolean("isLive") == true
+        val liveNow = root.optJSONObject("microformat")
+            ?.optJSONObject("playerMicroformatRenderer")
+            ?.optJSONObject("liveBroadcastDetails")
+            ?.optBoolean("isLiveNow") == true
+        val live = details?.optBoolean("isLive") == true ||
+            details?.optString("isLive").equals("true", true) ||
+            liveNow ||
+            pageUrl.contains("/live/", ignoreCase = true)
         val seconds = details?.optString("lengthSeconds")?.toLongOrNull() ?: 0L
         val thumb = details?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
             ?.let { arr ->
@@ -124,7 +133,7 @@ object YouTubeResolver {
             ?: "https://i.ytimg.com/vi/$id/hqdefault.jpg"
         val streaming = root.optJSONObject("streamingData")
         val playUrl = streaming?.optString("hlsManifestUrl")?.takeIf { it.isNotBlank() }
-            ?: streaming?.optString("dashManifestUrl")?.takeIf { it.isNotBlank() && !live }
+            ?: streaming?.optString("dashManifestUrl")?.takeIf { it.isNotBlank() }
             ?: streaming?.let { bestProgressive(it) }
         val captions = YouTubeCaptions.parseTracks(root)
         Log.i(

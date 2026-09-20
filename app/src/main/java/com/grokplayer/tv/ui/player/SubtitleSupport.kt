@@ -22,7 +22,7 @@ internal data class SubtitleOption(
     val language: String? = null,
     val forced: Boolean = false,
 ) {
-    val isOff: Boolean get() = group == null
+    val isOff: Boolean get() = key == Off.key
 
     companion object {
         val Off = SubtitleOption(key = "off", label = "Kapalı")
@@ -41,6 +41,13 @@ internal fun sidecarSubtitleConfigs(video: LibraryVideo): List<MediaItem.Subtitl
             .setSelectionFlags(0)
             .build()
     }
+}
+
+internal fun sidecarAudioFile(video: LibraryVideo, local: File? = null): File? {
+    val videoFile = local ?: resolveVideoFile(video) ?: return null
+    val stem = videoFile.nameWithoutExtension
+    return DownloadOwnership.sidecarsBeside(videoFile)
+        .firstOrNull { file -> DownloadOwnership.isOwnedAudio(stem, file) && file.length() > 32L }
 }
 
 internal data class AudioOption(
@@ -188,6 +195,29 @@ internal fun applySubtitleChoice(player: Player, option: SubtitleOption) {
         )
     }
     player.trackSelectionParameters = builder.build()
+}
+
+internal fun resolveSubtitleOption(
+    options: List<SubtitleOption>,
+    selectedKey: String,
+    language: String?,
+    picked: Boolean,
+    captionsOn: Boolean,
+    captionLang: String,
+): SubtitleOption {
+    if (picked) {
+        options.firstOrNull { it.key == selectedKey }?.let { return it }
+        val want = language?.trim()?.lowercase().orEmpty()
+            .ifBlank { selectedKey.substringAfter("yt:", "").substringBefore(":") }
+        if (want.isNotBlank()) {
+            options.firstOrNull { option ->
+                !option.isOff && option.language?.lowercase()?.startsWith(want.take(2)) == true
+            }?.let { return it }
+        }
+        return SubtitleOption.Off
+    }
+    if (captionsOn) return preferredSubtitle(options, captionLang) ?: SubtitleOption.Off
+    return SubtitleOption.Off
 }
 
 internal fun muteDefaultTextTracks(player: Player) {

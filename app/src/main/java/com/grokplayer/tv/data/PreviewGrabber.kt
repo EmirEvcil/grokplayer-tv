@@ -5,58 +5,108 @@ import android.net.Uri
 import android.util.LruCache
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
+
+object SeekPreviewPlan {
+    const val TILE_WIDTH = 240
+    const val FIRST_WAVE = 12
+    const val MAX_PRELOAD = 64
+    const val BUCKET_MS = 200L
+    const val NEAREST_MS = 1_500L
+
+    fun times(durationMs: Long, stepMs: Long): List<Long> = seekTimes(durationMs, stepMs)
+
+    fun prioritize(times: List<Long>, aroundMs: Long): List<Long> =
+        times.sortedBy { abs(it - aroundMs) }
+
+    fun firstWave(times: List<Long>, aroundMs: Long, size: Int = FIRST_WAVE): List<Long> =
+        prioritize(times, aroundMs).take(size.coerceAtLeast(1))
+
+    fun bucket(timeMs: Long): Long = timeMs / BUCKET_MS
+
+    fun nearest(times: List<Long>, targetMs: Long, maxDeltaMs: Long = NEAREST_MS): Long? {
+        if (times.isEmpty()) return null
+        val best = times.minBy { abs(it - targetMs) }
+        return best.takeIf { abs(it - targetMs) <= maxDeltaMs }
+    }
+
+    fun canExtract(uri: Uri, path: String?): Boolean =
+        canExtract(uri.scheme, uri.path, path)
+
+    fun canExtract(scheme: String?, uriPath: String?, filePath: String?): Boolean {
+        val path = (filePath ?: uriPath).orEmpty().lowercase()
+        if (path.endsWith(".m3u8") || path.endsWith(".m3u") || path.endsWith(".mpd")) return false
+        if (!filePath.isNullOrBlank() && java.io.File(filePath).canRead()) return true
+        val kind = scheme?.lowercase()
+        if (kind == "file" || kind == "content") return true
+        if (kind != "http" && kind != "https") return false
+        val name = uriPath.orEmpty().lowercase()
+        return name.endsWith(".mp4") || name.endsWith(".mkv") || name.endsWith(".webm") ||
+            name.endsWith(".mov") || name.endsWith(".m4v")
+    }
+}
 
 object PreviewGrabber {
-    private val memory = object : LruCache<String, ImageBitmap>(24) {}
+    private val memory = object : LruCache<String, ImageBitmap>(96) {}
 
-    private fun key(uri: String, timeMs: Long): String = "$uri:${timeMs / 200}"
+    private fun key(uri: String, timeMs: Long): String = "$uri:${SeekPreviewPlan.bucket(timeMs)}"
 
     fun cached(uri: Uri, timeMs: Long): ImageBitmap? = memory.get(key(uri.toString(), timeMs))
 
-    suspend fun loadWindow(
+    fun put(uri: Uri, timeMs: Long, image: ImageBitmap) {
+        memory.put(key(uri.toString(), timeMs), image)
+    }
+
+    suspend fun preload(
         context: Context,
         uri: Uri,
         path: String?,
         timesMs: List<Long>,
-        allowExo: Boolean = true,
+        aroundMs: Long,
         onFrame: (Long, ImageBitmap) -> Unit,
     ) {
         if (timesMs.isEmpty()) return
-        val missing = timesMs.distinct().filter { cached(uri, it) == null }
         timesMs.forEach { time ->
             cached(uri, time)?.let { onFrame(time, it) }
         }
+        if (!SeekPreviewPlan.canExtract(uri, path)) return
+        val missing = SeekPreviewPlan.prioritize(timesMs, aroundMs)
+            .filter { cached(uri, it) == null }
+            .take(SeekPreviewPlan.MAX_PRELOAD)
         if (missing.isEmpty()) return
         withContext(Dispatchers.IO) {
-            val first = MediaProbe.frameBitmap(context, uri, path, missing.first())
-            if (first != null) {
-                remember(uri, missing.first(), first)?.let { onFrame(missing.first(), it) }
-                missing.drop(1).forEach { time ->
-                    val bmp = MediaProbe.frameBitmap(context, uri, path, time) ?: return@forEach
-                    remember(uri, time, bmp)?.let { onFrame(time, it) }
-                }
-                return@withContext
-            }
-            if (!allowExo) return@withContext
-            val grabbed = ExoFrameGrab.grabMany(context, uri, missing.take(4), timeoutMs = 5_000L)
-            grabbed.forEach { (time, bmp) ->
-                remember(uri, time, bmp)?.let { onFrame(time, it) }
+            val first = missing.take(SeekPreviewPlan.FIRST_WAVE)
+            val rest = missing.drop(first.size)
+            grab(context, uri, path, first, onFrame)
+            if (rest.isNotEmpty()) {
+                grab(context, uri, path, rest, onFrame)
             }
         }
     }
 
-    private fun remember(uri: Uri, timeMs: Long, bitmap: android.graphics.Bitmap): ImageBitmap? {
-        return try {
-            val image = bitmap.asImageBitmap()
-            memory.put(key(uri.toString(), timeMs), image)
-            image
-        } catch (_: Exception) {
-            null
+    private suspend fun grab(
+        context: Context,
+        uri: Uri,
+        path: String?,
+        times: List<Long>,
+        onFrame: (Long, ImageBitmap) -> Unit,
+    ) {
+        if (times.isEmpty()) return
+        val frames = MediaProbe.framesAt(context, uri, path, times, SeekPreviewPlan.TILE_WIDTH)
+        frames.forEach { (time, bitmap) ->
+            yield()
+            val image = runCatching { bitmap.asImageBitmap() }.getOrNull() ?: return@forEach
+            put(uri, time, image)
+            withContext(Dispatchers.Main.immediate) { onFrame(time, image) }
         }
     }
 }
+
+fun seekCursor(previewVisible: Boolean, previewPos: Long, position: Long): Long =
+    if (previewVisible) previewPos else position
 
 fun seekTimes(duration: Long, step: Long): List<Long> {
     if (duration <= 0L || step <= 0L) return listOf(0L)

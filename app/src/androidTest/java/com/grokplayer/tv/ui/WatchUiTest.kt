@@ -69,7 +69,7 @@ class WatchUiTest {
                 down = down,
             )
         }
-        rule.onNodeWithText("Kaldığın yer").assertIsDisplayed()
+        rule.onNodeWithText("İZLEMEYE DEVAM ET").assertIsDisplayed()
         rule.onNodeWithText("Dizi S01E03").assertIsDisplayed()
         rule.onNodeWithText("Devam et").assertIsDisplayed()
         rule.onNodeWithText("Baştan oynat").assertIsDisplayed()

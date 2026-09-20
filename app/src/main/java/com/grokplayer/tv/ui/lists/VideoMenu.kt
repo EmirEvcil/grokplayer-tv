@@ -46,6 +46,20 @@ import com.grokplayer.tv.data.WatchFeedback
 import com.grokplayer.tv.data.WatchStatus
 import com.grokplayer.tv.data.WatchStore
 import com.grokplayer.tv.data.isVod
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
+import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
+import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.ThumbDown
+import androidx.compose.material.icons.outlined.ThumbUp
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import com.grokplayer.tv.ui.components.ModalAction
 import com.grokplayer.tv.ui.components.ModalMenu
 import com.grokplayer.tv.ui.components.VideoDetailsBody
@@ -148,7 +162,7 @@ fun VideoMenuHost(
         finish("Koleksiyona eklendi")
     }
 
-    val geri = ModalAction("Geri") { back() }
+    val geri = ModalAction("Geri", id = "back", icon = Icons.AutoMirrored.Outlined.ArrowBack) { back() }
 
     val title: String
     val pageMeta: String?
@@ -167,50 +181,42 @@ fun VideoMenuHost(
             actions = buildList {
                 addAll(extraActions)
                 if (showDetails) {
-                    add(ModalAction("Ayrıntılar") { push(VideoMenuPage.Details) })
+                    add(ModalAction("Ayrıntılar", id = "details", icon = Icons.Outlined.Info) { push(VideoMenuPage.Details) })
                 }
                 if (showAddToList) {
-                    add(ModalAction(stringResource(R.string.add_to_playlist)) { push(VideoMenuPage.PickPlaylist) })
-                    add(ModalAction(stringResource(R.string.add_to_collection)) { push(VideoMenuPage.PickCollection) })
+                    add(ModalAction(stringResource(R.string.add_to_playlist), id = "playlist", icon = Icons.AutoMirrored.Outlined.PlaylistAdd) { push(VideoMenuPage.PickPlaylist) })
+                    add(ModalAction(stringResource(R.string.add_to_collection), id = "collection", icon = Icons.Outlined.Folder) { push(VideoMenuPage.PickCollection) })
                 }
                 if (moveTargets != null) {
-                    add(ModalAction("Koleksiyona taşı") { push(VideoMenuPage.PickCollection) })
+                    add(ModalAction("Koleksiyona taşı", id = "move", icon = Icons.AutoMirrored.Outlined.DriveFileMove) { push(VideoMenuPage.PickCollection) })
                 }
                 if (watch != null && video.isVod()) {
                     val status = watch.status(video)
                     add(
                         if (status == WatchStatus.Watched) {
-                            ModalAction(stringResource(R.string.mark_unwatched)) { watch.markUnwatched(video) }
+                            ModalAction(stringResource(R.string.mark_unwatched), id = "watch", icon = Icons.Outlined.VisibilityOff) { watch.markUnwatched(video) }
                         } else {
-                            ModalAction(stringResource(R.string.mark_watched)) { watch.markWatched(video) }
+                            ModalAction(stringResource(R.string.mark_watched), id = "watch", icon = Icons.Outlined.Visibility) { watch.markWatched(video) }
                         },
                     )
                     val feedback = watch.feedback(video)
                     add(
                         if (feedback == WatchFeedback.Liked) {
-                            ModalAction(stringResource(R.string.liked_clear)) {
-                                watch.toggleFeedback(video, WatchFeedback.Liked)
-                            }
+                            ModalAction(stringResource(R.string.liked_clear), id = "like", icon = Icons.Outlined.ThumbUp) { watch.toggleFeedback(video, WatchFeedback.Liked) }
                         } else {
-                            ModalAction(stringResource(R.string.liked)) {
-                                watch.toggleFeedback(video, WatchFeedback.Liked)
-                            }
+                            ModalAction(stringResource(R.string.liked), id = "like", icon = Icons.Outlined.ThumbUp) { watch.toggleFeedback(video, WatchFeedback.Liked) }
                         },
                     )
                     add(
                         if (feedback == WatchFeedback.Disliked) {
-                            ModalAction(stringResource(R.string.disliked_clear)) {
-                                watch.toggleFeedback(video, WatchFeedback.Disliked)
-                            }
+                            ModalAction(stringResource(R.string.disliked_clear), id = "dislike", icon = Icons.Outlined.ThumbDown) { watch.toggleFeedback(video, WatchFeedback.Disliked) }
                         } else {
-                            ModalAction(stringResource(R.string.disliked)) {
-                                watch.toggleFeedback(video, WatchFeedback.Disliked)
-                            }
+                            ModalAction(stringResource(R.string.disliked), id = "dislike", icon = Icons.Outlined.ThumbDown) { watch.toggleFeedback(video, WatchFeedback.Disliked) }
                         },
                     )
                 }
                 addAll(trailingActions)
-                add(ModalAction(stringResource(R.string.close), onDismiss))
+                add(ModalAction(stringResource(R.string.close), id = "close", icon = Icons.Outlined.Close, onClick = onDismiss))
             }
         }
         VideoMenuPage.Details -> {
@@ -229,12 +235,12 @@ fun VideoMenuHost(
             headerFocus = null
             val custom = playlists?.items?.filter { it.custom }.orEmpty()
             actions = custom.map { item ->
-                ModalAction(item.title) {
+                ModalAction(item.title, icon = Icons.AutoMirrored.Outlined.PlaylistPlay) {
                     val store = playlists ?: return@ModalAction
                     finish(if (store.addVideo(item.id, video)) "Listeye eklendi" else "Bu video zaten listede")
                 }
             } + listOf(
-                ModalAction("Yeni oynatma listesi") { push(VideoMenuPage.NamePlaylist) },
+                ModalAction("Yeni oynatma listesi", icon = Icons.Outlined.Add) { push(VideoMenuPage.NamePlaylist) },
                 geri,
             )
         }
@@ -246,12 +252,12 @@ fun VideoMenuHost(
             headerFocus = null
             actions = if (moveTargets != null && !showAddToList) {
                 moveTargets.map { (id, label) ->
-                    ModalAction(label) {
+                    ModalAction(label, icon = Icons.Outlined.Folder) {
                         onMoveTo(id)
                         onDismiss()
                     }
                 } + listOf(
-                    ModalAction("Yeni koleksiyon") { push(VideoMenuPage.NameCollection) },
+                    ModalAction("Yeni koleksiyon", icon = Icons.Outlined.Add) { push(VideoMenuPage.NameCollection) },
                     geri,
                 )
             } else {
@@ -259,9 +265,9 @@ fun VideoMenuHost(
                 val cols = collections
                 val targets = if (store != null && cols != null) collectionTargets(store, cols) else emptyList()
                 targets.map { (playlistId, collectionId, label) ->
-                    ModalAction(label) { putInCollection(playlistId, collectionId) }
+                    ModalAction(label, icon = Icons.Outlined.Folder) { putInCollection(playlistId, collectionId) }
                 } + listOf(
-                    ModalAction("Yeni koleksiyon") { push(VideoMenuPage.PickPlaylistForNewCollection) },
+                    ModalAction("Yeni koleksiyon", icon = Icons.Outlined.Add) { push(VideoMenuPage.PickPlaylistForNewCollection) },
                     geri,
                 )
             }
@@ -274,12 +280,12 @@ fun VideoMenuHost(
             headerFocus = null
             val custom = playlists?.items?.filter { it.custom }.orEmpty()
             actions = custom.map { item ->
-                ModalAction(item.title) {
+                ModalAction(item.title, icon = Icons.AutoMirrored.Outlined.PlaylistPlay) {
                     targetPlaylist = item
                     push(VideoMenuPage.NameCollection)
                 }
             } + listOf(
-                ModalAction("Yeni oynatma listesi") { push(VideoMenuPage.NamePlaylistThenCollection) },
+                ModalAction("Yeni oynatma listesi", icon = Icons.Outlined.Add) { push(VideoMenuPage.NamePlaylistThenCollection) },
                 geri,
             )
         }
@@ -304,7 +310,7 @@ fun VideoMenuHost(
             focusHeader = true
             headerFocus = nameFocus
             actions = listOf(
-                ModalAction("Kaydet") {
+                ModalAction("Kaydet", icon = Icons.Outlined.Check) {
                     val name = draftName.trim()
                     if (name.isEmpty()) return@ModalAction
                     when (page) {

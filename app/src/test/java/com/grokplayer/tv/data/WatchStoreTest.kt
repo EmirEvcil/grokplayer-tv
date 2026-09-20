@@ -17,12 +17,22 @@ class WatchStoreTest {
 
     @Test
     fun sameOriginSharesIdentityAcrossListsAndLocalCopy() {
-        val playlist = WatchLogic.key(true, "https://ex/watch?v=1", null, "playlist-a")
-        val collection = WatchLogic.key(true, "https://ex/watch?v=1", null, "collection-b")
-        val downloaded = WatchLogic.key(true, "https://ex/watch?v=1", "C:\\tmp\\missing.mp4", "download:1")
+        val playlist = WatchLogic.key(true, "https://ex/show/ep1", null, "playlist-a")
+        val collection = WatchLogic.key(true, "https://ex/show/ep1", null, "collection-b")
+        val downloaded = WatchLogic.key(true, "https://ex/show/ep1", "C:\\tmp\\missing.mp4", "download:1")
         assertEquals(playlist, collection)
         assertEquals(playlist, downloaded)
-        assertEquals("https://ex/watch", playlist)
+        assertEquals("https://ex/show/ep1", playlist)
+    }
+
+    @Test
+    fun youtubeWatchIdsStayDistinct() {
+        val a = WatchLogic.key(true, "https://www.youtube.com/watch?v=aaaaaaaaaaa", null, "a")
+        val b = WatchLogic.key(true, "https://www.youtube.com/watch?v=bbbbbbbbbbb", null, "b")
+        val same = WatchLogic.key(true, "https://youtu.be/aaaaaaaaaaa?t=30", null, "c")
+        assertEquals("youtube:aaaaaaaaaaa", a)
+        assertEquals(a, same)
+        assertEquals("youtube:bbbbbbbbbbb", b)
     }
 
     @Test
@@ -62,6 +72,29 @@ class WatchStoreTest {
     fun remainingWindowMarksWatched() {
         val rec = WatchLogic.applyProgress(WatchRecord(), 86_000L, 100_000L, 1L)
         assertEquals(WatchStatus.Watched, WatchLogic.status(rec, false))
+    }
+
+    @Test
+    fun seekCursorDoesNotSnapBackwardToPlayerPosition() {
+        assertEquals(4_000L, seekCursor(previewVisible = true, previewPos = 4_000L, position = 20_000L))
+        assertEquals(20_000L, seekCursor(previewVisible = false, previewPos = 4_000L, position = 20_000L))
+    }
+
+    @Test
+    fun watchDurationPrefersShorterPlaybackLength() {
+        var rec = WatchLogic.applyProgress(WatchRecord(), 10_000L, 20_000L, 1L)
+        rec = WatchLogic.applyProgress(rec, 10_000L, 10_000L, 2L)
+        assertEquals(10_000L, rec.durationMs)
+        assertEquals(10_000L, rec.positionMs)
+    }
+
+    @Test
+    fun shortMp4NeedsNinetyPercent() {
+        val mid = WatchLogic.applyProgress(WatchRecord(), 5_000L, 10_000L, 1L)
+        assertEquals(WatchStatus.Watching, WatchLogic.status(mid, false))
+        assertFalse(WatchLogic.isFinished(5_000L, 10_000L))
+        val done = WatchLogic.applyProgress(WatchRecord(), 9_000L, 10_000L, 2L)
+        assertEquals(WatchStatus.Watched, WatchLogic.status(done, false))
     }
 
     @Test

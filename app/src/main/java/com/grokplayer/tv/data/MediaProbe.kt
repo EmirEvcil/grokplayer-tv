@@ -176,6 +176,8 @@ object MediaProbe {
     }
 
     fun frameBitmap(context: Context, uri: Uri, path: String?, timeMs: Long, maxWidth: Int = 640): Bitmap? {
+        val local = path?.let { File(it) }?.takeIf { it.isFile && it.canRead() }
+        if (local == null && ThumbnailCache.playbackActive) return null
         val fromRetriever = withRetriever(context, uri, path) { retriever ->
             val timeUs = timeMs.coerceAtLeast(0L) * 1000L
             retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
@@ -188,6 +190,28 @@ object MediaProbe {
 
     fun frameImage(context: Context, uri: Uri, path: String?, timeMs: Long): ImageBitmap? =
         frameBitmap(context, uri, path, timeMs)?.asImageBitmap()
+
+    fun framesAt(
+        context: Context,
+        uri: Uri,
+        path: String?,
+        timesMs: List<Long>,
+        maxWidth: Int = 240,
+    ): List<Pair<Long, Bitmap>> {
+        if (timesMs.isEmpty()) return emptyList()
+        return withRetriever(context, uri, path) { retriever ->
+            val out = ArrayList<Pair<Long, Bitmap>>(timesMs.size)
+            timesMs.forEach { time ->
+                val raw = retriever.getFrameAtTime(
+                    time.coerceAtLeast(0L) * 1_000L,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                ) ?: return@forEach
+                val scaled = scale(raw, maxWidth) ?: return@forEach
+                out += time to scaled
+            }
+            out
+        }.orEmpty()
+    }
 
     private fun retrieverDuration(context: Context, uri: Uri, path: String?): Long {
         return withRetriever(context, uri, path) { retriever ->

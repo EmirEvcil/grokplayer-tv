@@ -5,8 +5,20 @@ import java.net.URL
 
 object StreamProbe {
     fun detectKind(url: String): StreamKind {
-        val body = fetchPrefix(url) ?: return guessFromUrl(url)
+        val body = fetchPrefix(url) ?: return guessKind(url)
         return classify(url, body)
+    }
+
+    fun guessKind(url: String): StreamKind {
+        val lower = url.lowercase()
+        val yt = com.grokplayer.tv.data.scan.YouTubeResolver.videoId(lower)
+        if (yt != null && ("/live/" in lower || lower.contains("youtube.com/live"))) {
+            return StreamKind.Live
+        }
+        if ("/live" in lower || "livestream" in lower || "simulcast" in lower || "is_live" in lower) {
+            return StreamKind.Live
+        }
+        return StreamKind.Vod
     }
 
     private fun classify(url: String, body: String): StreamKind {
@@ -40,16 +52,7 @@ object StreamProbe {
                 StreamKind.Vod
             }
         }
-        return guessFromUrl(url)
-    }
-
-    private fun guessFromUrl(url: String): StreamKind {
-        val lower = url.lowercase()
-        return if (lower.contains("/live") || lower.contains("livestream")) {
-            StreamKind.Live
-        } else {
-            StreamKind.Vod
-        }
+        return guessKind(url)
     }
 
     fun playUrl(url: String): String {

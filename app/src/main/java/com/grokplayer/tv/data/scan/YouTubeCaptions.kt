@@ -402,6 +402,9 @@ object YouTubeCaptions {
                 language = mediaAttr(body, "LANGUAGE").orEmpty(),
                 name = mediaAttr(body, "NAME").orEmpty(),
                 uri = uri,
+                groupId = mediaAttr(body, "GROUP-ID").orEmpty(),
+                isDefault = mediaAttr(body, "DEFAULT")?.equals("YES", true) == true,
+                autoSelect = mediaAttr(body, "AUTOSELECT")?.equals("YES", true) == true,
             )
         }.toList()
     }
@@ -471,6 +474,9 @@ internal data class HlsMediaTag(
     val language: String,
     val name: String,
     val uri: String,
+    val groupId: String = "",
+    val isDefault: Boolean = false,
+    val autoSelect: Boolean = false,
 )
 
 private fun mediaAttr(body: String, key: String): String? {

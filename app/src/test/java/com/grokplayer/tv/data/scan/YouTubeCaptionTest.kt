@@ -81,6 +81,7 @@ class YouTubeCaptionTest {
         assertEquals(2, media.size)
         assertEquals("SUBTITLES", media[1].type)
         assertEquals("tr", media[1].language)
+        assertEquals("audio", media[0].groupId)
     }
 
     @Test

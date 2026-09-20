@@ -67,7 +67,12 @@ import kotlinx.coroutines.launch
 import com.grokplayer.tv.ui.theme.InterceptBack
 import com.grokplayer.tv.ui.theme.RememberFocusLock
 
-data class ModalAction(val label: String, val onClick: () -> Unit)
+data class ModalAction(
+    val label: String,
+    val id: String = label,
+    val icon: ImageVector? = null,
+    val onClick: () -> Unit,
+)
 
 @Composable
 fun ModalMenu(
@@ -137,18 +142,15 @@ fun ModalMenu(
                 }
                 if (header != null && keys.isNotEmpty()) header(keys.first())
                 actions.forEachIndexed { index, action ->
-                    key(focusNonce, index, action.label) {
+                    key(focusNonce, index, action.id) {
                     val last = actions.lastIndex
-                    val interaction = remember(focusNonce, action.label, index) { MutableInteractionSource() }
+                    val interaction = remember(focusNonce, action.id, index) { MutableInteractionSource() }
                     val focused = interaction.collectIsFocusedAsState().value
-                    val once = remember(action.label, index, focusNonce) { com.grokplayer.tv.data.OkAction() }
+                    val once = remember(action.id, index, focusNonce) { com.grokplayer.tv.data.OkAction() }
                     fun fire() {
                         once.fire { action.onClick() }
                     }
-                    Text(
-                        text = action.label,
-                        style = GrokType.button,
-                        color = if (focused) GrokInk else GrokWhite,
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .focusRequester(keys[index])
@@ -182,7 +184,23 @@ fun ModalMenu(
                                 true
                             }
                             .padding(horizontal = 12.dp, vertical = 10.dp),
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        if (action.icon != null) {
+                            Icon(
+                                action.icon,
+                                contentDescription = null,
+                                tint = if (focused) GrokInk else GrokWhite,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                        Text(
+                            text = action.label,
+                            style = GrokType.button,
+                            color = if (focused) GrokInk else GrokWhite,
+                        )
+                    }
                     }
                 }
             }

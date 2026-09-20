@@ -79,6 +79,8 @@ internal object DownloadOwnership {
         if (isSafeId(item.id)) {
             found += dest(root, item.id, item.title, "ts")
             found += dest(root, item.id, item.title, "mp4")
+            found += dest(root, item.id, item.title, "m4a")
+            found += dest(root, item.id, item.title, "m3u8")
             found += File(itemDir(root, item.id), "meta.json")
         }
         found += legacyDest(root, item.id, item.title, "ts")

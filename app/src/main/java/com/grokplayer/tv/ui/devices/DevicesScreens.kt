@@ -22,6 +22,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.LinkOff
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -943,12 +948,12 @@ fun DeviceOptions(
         width = 400.dp,
         actions = buildList {
             if (connected) {
-                add(com.grokplayer.tv.ui.components.ModalAction("Yönet", onManage))
-                add(com.grokplayer.tv.ui.components.ModalAction("Bağlantıyı kes", onDisconnect))
+                add(com.grokplayer.tv.ui.components.ModalAction("Yönet", icon = Icons.Outlined.Settings, onClick = onManage))
+                add(com.grokplayer.tv.ui.components.ModalAction("Bağlantıyı kes", icon = Icons.Outlined.LinkOff, onClick = onDisconnect))
             } else {
-                add(com.grokplayer.tv.ui.components.ModalAction("Bağlan", onConnect))
+                add(com.grokplayer.tv.ui.components.ModalAction("Bağlan", icon = Icons.Outlined.Link, onClick = onConnect))
             }
-            add(com.grokplayer.tv.ui.components.ModalAction("Eşleşmeyi unut", onForget))
+            add(com.grokplayer.tv.ui.components.ModalAction("Eşleşmeyi unut", icon = Icons.Outlined.Delete, onClick = onForget))
         },
     )
 }

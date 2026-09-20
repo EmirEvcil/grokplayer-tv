@@ -49,7 +49,7 @@ fun LibraryVideo.fileKey(): String? {
         ?: uri.path?.let { java.io.File(it) }?.takeIf { it.isFile }
     if (file != null) return mediaFileKey(file.name, file.length())
     val remote = originUrl?.ifBlank { null } ?: uri.takeIf { it.scheme == "http" || it.scheme == "https" }?.toString()
-    return remote?.substringBefore('?')?.lowercase()
+    return remote?.let { WatchLogic.originIdentity(it) }
 }
 
 fun progressTitlesMatch(left: String, right: String): Boolean {
@@ -93,7 +93,7 @@ internal fun sameOpened(a: LibraryVideo, b: LibraryVideo): Boolean {
 private fun originKey(video: LibraryVideo): String? {
     val raw = video.originUrl?.ifBlank { null }
         ?: video.uri.takeIf { it.scheme == "http" || it.scheme == "https" }?.toString()
-    return raw?.substringBefore('?')?.lowercase()
+    return raw?.let { WatchLogic.originIdentity(it) }
 }
 
 data class PlaySession(

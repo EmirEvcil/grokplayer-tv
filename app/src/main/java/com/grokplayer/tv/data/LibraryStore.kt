@@ -108,18 +108,18 @@ class LibraryStore(context: Context) {
         persistState()
     }
 
-    fun markPlayed(video: LibraryVideo, positionMs: Long) {
+    fun markPlayed(video: LibraryVideo, positionMs: Long, durationMs: Long = video.durationMs) {
         markPlayed(video.id, positionMs)
         video.fileKey()?.let { key ->
             keyedProgress = keyedProgress + (key to positionMs)
             persistKeyed()
         }
-        watch.onPlayed(video, positionMs, video.durationMs)
+        watch.onPlayed(video, positionMs, durationMs.takeIf { it > 0L } ?: video.durationMs)
     }
 
     fun startPosition(video: LibraryVideo, remoteMs: Long = 0L): Long {
         if (!video.isVod()) return 0L
-        if (watch.status(video) == WatchStatus.Unwatched) return 0L
+        if (watch.record(video)?.manual == WatchStatus.Unwatched) return 0L
         val local = progress[video.id] ?: 0L
         val keyed = video.fileKey()?.let { keyedProgress[it] } ?: 0L
         val titled = keyedProgress["title|${video.title.trim().lowercase()}"] ?: 0L

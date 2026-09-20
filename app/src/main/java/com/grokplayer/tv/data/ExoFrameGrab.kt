@@ -42,18 +42,6 @@ object ExoFrameGrab {
         }
     }
 
-    fun grabMany(
-        context: Context,
-        uri: android.net.Uri,
-        timesMs: List<Long>,
-        timeoutMs: Long = 8_000L,
-    ): Map<Long, Bitmap> {
-        if (timesMs.isEmpty()) return emptyMap()
-        val first = timesMs.first()
-        val frame = grab(context, uri, first, timeoutMs) ?: return emptyMap()
-        return mapOf(first to frame)
-    }
-
     private fun grabLocked(
         context: Context,
         uri: android.net.Uri,
@@ -155,7 +143,14 @@ object ExoFrameGrab {
             runCatching { player?.release() }
             runCatching { texture?.let { root?.removeView(it) } }
         }
-        return if (rejectBlack) result?.takeUnless { isMostlyBlack(it) } else result
+        val trimmed = result?.let { trimDecoderEdge(it) }
+        return if (rejectBlack) trimmed?.takeUnless { isMostlyBlack(it) } else trimmed
+    }
+
+    private fun trimDecoderEdge(bitmap: Bitmap): Bitmap {
+        val crop = (bitmap.width * 0.04f).toInt().coerceIn(2, 16)
+        if (bitmap.width <= crop + 8) return bitmap
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width - crop, bitmap.height)
     }
 
     private fun activityOf(context: Context): Activity? {

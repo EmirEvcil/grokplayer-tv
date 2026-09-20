@@ -49,6 +49,16 @@ class StreamStore(context: Context) {
     var items by mutableStateOf(load())
         private set
 
+    init {
+        if (!prefs.getBoolean("catalog_seeded", false)) {
+            if (items.isEmpty()) {
+                items = samples()
+                persist()
+            }
+            prefs.edit().putBoolean("catalog_seeded", true).apply()
+        }
+    }
+
     fun add(
         title: String,
         url: String,
@@ -58,9 +68,9 @@ class StreamStore(context: Context) {
         userAgent: String? = null,
         durationMs: Long = 0L,
         pageUrl: String? = null,
-    ) {
+    ): String? {
         val cleanUrl = url.trim()
-        if (cleanUrl.isBlank()) return
+        if (cleanUrl.isBlank()) return null
         val item = StreamItem(
             id = UUID.randomUUID().toString(),
             title = title.trim().ifBlank { cleanUrl.substringAfterLast('/').ifBlank { "Akış" } },
@@ -75,6 +85,23 @@ class StreamStore(context: Context) {
             pageUrl = pageUrl?.trim()?.ifBlank { null },
         )
         items = listOf(item) + items
+        persist()
+        return item.id
+    }
+
+    fun applyHit(id: String, hit: com.grokplayer.tv.data.scan.ScanHit) {
+        items = items.map { item ->
+            if (item.id != id) item else item.copy(
+                title = hit.title.ifBlank { item.title },
+                url = hit.playUrl,
+                kind = hit.kind,
+                posterUrl = hit.thumbnailUrl ?: item.posterUrl,
+                referer = hit.referer ?: item.referer,
+                userAgent = hit.userAgent ?: item.userAgent,
+                durationMs = hit.durationMs.takeIf { it > 0L } ?: item.durationMs,
+                pageUrl = hit.pageUrl.ifBlank { item.pageUrl },
+            )
+        }
         persist()
     }
 
@@ -115,7 +142,8 @@ class StreamStore(context: Context) {
     }
 
     private fun load(): List<StreamItem> {
-        val raw = prefs.getString("items", null) ?: return emptyList()
+        val raw = prefs.getString("items", null)
+        if (raw.isNullOrBlank()) return emptyList()
         return runCatching {
             val array = JSONArray(raw)
             buildList {
@@ -140,5 +168,47 @@ class StreamStore(context: Context) {
                 }
             }
         }.getOrDefault(emptyList())
+    }
+
+    private fun samples(): List<StreamItem> {
+        val now = System.currentTimeMillis()
+        fun vod(id: String, title: String, url: String) = StreamItem(
+            id = id,
+            title = title,
+            url = url,
+            kind = StreamKind.Vod,
+            favorite = false,
+            addedAt = now,
+        )
+        return listOf(
+            vod(
+                "sample:bbb",
+                "Big Buck Bunny",
+                "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+            ),
+            vod(
+                "sample:elephants",
+                "Elephant's Dream",
+                "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
+            ),
+            vod(
+                "sample:sintel",
+                "Sintel",
+                "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4",
+            ),
+            vod(
+                "sample:tears",
+                "Tears of Steel",
+                "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4",
+            ),
+            StreamItem(
+                id = "sample:bbc-testcard",
+                title = "BBC Testcard",
+                url = "https://rdmedia.bbc.co.uk/testcard/simulcast/manifests/avc-ctv-stereo-en.m3u8",
+                kind = StreamKind.Live,
+                favorite = false,
+                addedAt = now,
+            ),
+        )
     }
 }

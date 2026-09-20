@@ -30,7 +30,11 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Computer
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.Icon
@@ -368,13 +372,22 @@ fun StreamsScreen(
             AddStreamDialog(
                 initialUrl = seedUrl,
                 onSave = { title, url ->
-                    streams.add(title, url, StreamKind.Vod)
+                    val guessed = StreamProbe.guessKind(url)
+                    val id = streams.add(title, url, guessed, pageUrl = url)
                     addOpen = false
-                    val id = streams.items.firstOrNull { it.url == url }?.id
-                    scope.launch(Dispatchers.IO) {
-                        val kind = StreamProbe.detectKind(url)
-                        if (id != null) {
-                            withContext(Dispatchers.Main) { streams.updateKind(id, kind) }
+                    if (id != null) {
+                        scope.launch(Dispatchers.IO) {
+                            val hits = runCatching {
+                                com.grokplayer.tv.data.scan.PageScanner.scan(context, url)
+                            }.getOrDefault(emptyList())
+                            val hit = hits.firstOrNull()
+                            withContext(Dispatchers.Main) {
+                                if (hit != null) {
+                                    streams.applyHit(id, hit)
+                                } else {
+                                    streams.updateKind(id, StreamProbe.detectKind(url))
+                                }
+                            }
                         }
                     }
                 },
@@ -427,7 +440,7 @@ fun StreamsScreen(
                     restoreAfterModal = true
                 },
                 extraActions = listOf(
-                    com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.resume)) {
+                    com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.resume), icon = Icons.Filled.PlayArrow) {
                         optionsFor = null
                         savedScrollIndex = gridState.firstVisibleItemIndex
                         savedScrollOffset = gridState.firstVisibleItemScrollOffset
@@ -440,7 +453,7 @@ fun StreamsScreen(
                 trailingActions = buildList {
                     if (canSend) {
                         add(
-                            com.grokplayer.tv.ui.components.ModalAction("PC’ye gönder") {
+                            com.grokplayer.tv.ui.components.ModalAction("PC’ye gönder", icon = Icons.Outlined.Computer) {
                                 optionsFor = null
                                 onSend(video)
                             },
@@ -455,19 +468,17 @@ fun StreamsScreen(
                             else -> stringResource(R.string.download)
                         }
                         add(
-                            com.grokplayer.tv.ui.components.ModalAction(label) {
+                            com.grokplayer.tv.ui.components.ModalAction(label, icon = Icons.Outlined.Download) {
                                 optionsFor = null
-                                val result = downloads.enqueueAll(
-                                    listOf(item.title to item.url),
-                                    downloadHeight,
-                                )
-                                onNotice(result.notice().ifBlank { "İndirme kuyruğu güncellendi" })
+                                downloads.enqueue(item.title, item.url, downloadHeight, item.pageUrl)
+                                onNotice("İndirme kuyruğu güncellendi")
                             },
                         )
                     }
                     add(
                         com.grokplayer.tv.ui.components.ModalAction(
                             if (item.favorite) "Favorilerden çıkar" else "Favorilere ekle",
+                            icon = if (item.favorite) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder,
                         ) {
                             streams.toggleFavorite(item.id)
                             optionsFor = null
@@ -475,7 +486,7 @@ fun StreamsScreen(
                         },
                     )
                     add(
-                        com.grokplayer.tv.ui.components.ModalAction("Sil") {
+                        com.grokplayer.tv.ui.components.ModalAction("Sil", icon = Icons.Outlined.Delete) {
                             streams.remove(item.id)
                             optionsFor = null
                             restoreAfterModal = true

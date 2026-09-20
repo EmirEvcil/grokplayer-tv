@@ -13,6 +13,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
+import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -162,7 +168,7 @@ fun RemoteFolderScreen(
                 meta = "PC klasörü",
                 onDismiss = { folderOptions = null },
                 actions = listOf(
-                    com.grokplayer.tv.ui.components.ModalAction("Tümünü oynat") {
+                    com.grokplayer.tv.ui.components.ModalAction("Tümünü oynat", icon = Icons.AutoMirrored.Outlined.PlaylistPlay) {
                         folderOptions = null
                         scope.launch {
                             val inside = link.browse(pc, dir.path, deep = true) ?: return@launch
@@ -170,18 +176,18 @@ fun RemoteFolderScreen(
                             if (queue.isEmpty()) notice = "Bu klasörde video yok" else onPlay(queue, 0)
                         }
                     },
-                    com.grokplayer.tv.ui.components.ModalAction("Oynatma listesine ekle") {
+                    com.grokplayer.tv.ui.components.ModalAction("Oynatma listesine ekle", icon = Icons.AutoMirrored.Outlined.PlaylistAdd) {
                         onAddPlaylist(dir.path, dir.name)
                         folderOptions = null
                     },
-                    com.grokplayer.tv.ui.components.ModalAction("Klasörü indir") {
+                    com.grokplayer.tv.ui.components.ModalAction("Klasörü indir", icon = Icons.Outlined.Download) {
                         folderOptions = null
                         scope.launch {
                             val inside = link.browse(pc, dir.path, deep = true) ?: return@launch
                             onDownload(link.videosFrom(pc, inside.videos))
                         }
                     },
-                    com.grokplayer.tv.ui.components.ModalAction("Kapat") { folderOptions = null },
+                    com.grokplayer.tv.ui.components.ModalAction("Kapat", icon = Icons.Outlined.Close) { folderOptions = null },
                 ),
             )
         }
@@ -195,7 +201,7 @@ fun RemoteFolderScreen(
                     watch = watch,
                     onDismiss = { optionsFor = null },
                     extraActions = listOf(
-                        com.grokplayer.tv.ui.components.ModalAction("Oynat") {
+                        com.grokplayer.tv.ui.components.ModalAction("Oynat", icon = Icons.Filled.PlayArrow) {
                             val queue = link.videosFrom(pc, listing?.videos.orEmpty())
                             val index = queue.indexOfFirst { it.title == video.title }.coerceAtLeast(0)
                             optionsFor = null
@@ -203,11 +209,11 @@ fun RemoteFolderScreen(
                         },
                     ),
                     trailingActions = listOf(
-                        com.grokplayer.tv.ui.components.ModalAction("İndir") {
+                        com.grokplayer.tv.ui.components.ModalAction("İndir", icon = Icons.Outlined.Download) {
                             onDownload(link.videosFrom(pc, listOf(video)))
                             optionsFor = null
                         },
-                        com.grokplayer.tv.ui.components.ModalAction("Klasörü indir") {
+                        com.grokplayer.tv.ui.components.ModalAction("Klasörü indir", icon = Icons.Outlined.Download) {
                             onDownload(link.videosFrom(pc, listing?.videos.orEmpty()))
                             optionsFor = null
                         },

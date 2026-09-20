@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.ClosedCaption
@@ -119,6 +120,7 @@ import com.grokplayer.tv.data.LibraryVideo
 import com.grokplayer.tv.data.PlaySession
 import com.grokplayer.tv.data.PlaybackSettings
 import com.grokplayer.tv.data.PreviewGrabber
+import com.grokplayer.tv.data.SeekPreviewPlan
 import com.grokplayer.tv.data.StreamHttp
 import com.grokplayer.tv.data.StreamProbe
 import com.grokplayer.tv.data.scan.YouTubeAudio
@@ -131,7 +133,10 @@ import com.grokplayer.tv.data.ThumbnailCache
 import com.grokplayer.tv.data.formatClock
 import com.grokplayer.tv.data.formatSpeedLabel
 import com.grokplayer.tv.data.isVod
+import com.grokplayer.tv.data.localPlaybackFile
+import com.grokplayer.tv.data.seekCursor
 import com.grokplayer.tv.data.seekTimes
+import com.grokplayer.tv.data.sniffContainer
 import com.grokplayer.tv.ui.components.VideoPoster
 import com.grokplayer.tv.ui.theme.GrokInk
 import com.grokplayer.tv.ui.theme.GrokMuted
@@ -168,6 +173,7 @@ fun PlayerScreen(
     var subtitleOpen by remember { mutableStateOf(false) }
     var subtitleOptions by remember { mutableStateOf(listOf(SubtitleOption.Off)) }
     var selectedSubtitleKey by remember { mutableStateOf(SubtitleOption.Off.key) }
+    var selectedSubtitleLang by remember { mutableStateOf<String?>(null) }
     var subtitlePicked by remember { mutableStateOf(false) }
     var subtitleCursor by remember { mutableIntStateOf(0) }
     var audioOpen by remember { mutableStateOf(false) }
@@ -192,6 +198,7 @@ fun PlayerScreen(
     var previewVisible by remember { mutableStateOf(false) }
     var previewPos by remember { mutableLongStateOf(0L) }
     var previewFrames by remember { mutableStateOf<Map<Long, ImageBitmap>>(emptyMap()) }
+    var pendingSeek by remember { mutableStateOf<Long?>(null) }
     var videoWidth by remember { mutableIntStateOf(0) }
     var videoHeight by remember { mutableIntStateOf(0) }
     val playFocus = remember { FocusRequester() }
@@ -256,13 +263,14 @@ fun PlayerScreen(
         val options = mergeSubtitleOptions(listSubtitleOptions(target.currentTracks), ytCaptions)
             .ifEmpty { subtitleOptions }
         subtitleOptions = options
-        val desired = if (subtitlePicked) {
-            options.firstOrNull { it.key == selectedSubtitleKey } ?: SubtitleOption.Off
-        } else if (settings.captionsOn) {
-            preferredSubtitle(options, settings.captionLang) ?: SubtitleOption.Off
-        } else {
-            SubtitleOption.Off
-        }
+        val desired = resolveSubtitleOption(
+            options = options,
+            selectedKey = selectedSubtitleKey,
+            language = selectedSubtitleLang,
+            picked = subtitlePicked,
+            captionsOn = settings.captionsOn,
+            captionLang = settings.captionLang,
+        )
         val currentKey = activeSubtitleKey(target.currentTracks, options)
         val needsOff = desired.isOff && target.currentTracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSelected }
         if (needsOff || (!desired.isOff && currentKey != desired.key)) {
@@ -283,18 +291,33 @@ fun PlayerScreen(
                     "open ${session.queue[index].format} state=$playbackState pos=${player.currentPosition}",
                 )
                 if (playbackState == Player.STATE_READY) {
+                    val wanted = PlaybackSettings.snapSpeed(speed)
+                    if (kotlin.math.abs(player.playbackParameters.speed - wanted) > 0.01f) {
+                        player.setPlaybackSpeed(wanted)
+                    }
                     applyPendingSubtitles(player)
                 }
-                if (playbackState == Player.STATE_ENDED &&
-                    settings.autoNext &&
-                    skipNextUpRef.get() &&
-                    !session.queue[index].isLive &&
-                    index < session.queue.lastIndex &&
-                    session.queue[index + 1].isVod()
-                ) {
-                    index += 1
-                } else if (playbackState == Player.STATE_ENDED) {
-                    controls = true
+                if (playbackState == Player.STATE_ENDED) {
+                    val item = session.queue.getOrNull(index)
+                    if (item != null && item.isVod()) {
+                        val pos = player.currentPosition.coerceAtLeast(0L)
+                        val reported = player.duration.takeIf { it > 0L } ?: item.durationMs
+                        val dur = if (pos in 1L until reported) pos else reported
+                        library.watch.markWatched(item)
+                        library.markPlayed(item, dur.coerceAtLeast(pos), dur)
+                        library.noteListPlay(session.listId, item)
+                    }
+                    val canNext = settings.autoNext &&
+                        skipNextUpRef.get() &&
+                        item != null &&
+                        item.isVod() &&
+                        index < session.queue.lastIndex &&
+                        session.queue[index + 1].isVod()
+                    if (canNext) {
+                        index += 1
+                    } else {
+                        controls = true
+                    }
                 }
             }
 
@@ -327,7 +350,7 @@ fun PlayerScreen(
             }
 
             override fun onTracksChanged(tracks: Tracks) {
-                val options = listSubtitleOptions(tracks)
+                val options = mergeSubtitleOptions(listSubtitleOptions(tracks), ytCaptions)
                 subtitleOptions = options
                 subtitleCursor = subtitleCursor.coerceIn(0, options.lastIndex.coerceAtLeast(0))
                 val audios = mergeAudioOptions(listAudioOptions(tracks), ytAudios)
@@ -361,7 +384,8 @@ fun PlayerScreen(
         onDispose {
             val item = session.queue.getOrNull(index)
             if (item != null) {
-                library.markPlayed(item, player.currentPosition)
+                val (pos, dur) = playClock(player, item.durationMs)
+                library.markPlayed(item, pos, dur)
                 library.noteListPlay(session.listId, item)
             }
             player.removeListener(listener)
@@ -370,6 +394,7 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(index) {
+        pendingSeek = null
         val item = session.queue[index]
         live = item.isLive
         atLiveEdge = !item.isLive
@@ -379,11 +404,7 @@ fun PlayerScreen(
         pausedLiveAt = 0L
         val openedAt = android.os.SystemClock.elapsedRealtime()
         val remote = item.uri.scheme == "http" || item.uri.scheme == "https"
-        val prepared = if (remote) {
-            withContext(Dispatchers.IO) { preparePlay(context, item) }
-        } else {
-            preparePlay(context, item)
-        }
+        val prepared = withContext(Dispatchers.IO) { preparePlay(context, item) }
         StreamHttp.applyPlayHeaders(httpFactory, prepared.referer, prepared.userAgent)
         ytCaptions = prepared.captions
         ytAudios = prepared.audios
@@ -394,11 +415,24 @@ fun PlayerScreen(
             "GrokPlayer",
             "open ${item.format} mediaItem ${android.os.SystemClock.elapsedRealtime() - openedAt}ms caps=${prepared.captions.size} dubs=${prepared.audios.size}",
         )
-        player.setMediaItem(prepared.mediaItem)
+        val sidecar = prepared.audioSidecar
+        if (sidecar != null && sidecar.isFile && sidecar.length() > 32L) {
+            val audioItem = MediaItem.Builder().setUri(android.net.Uri.fromFile(sidecar)).build()
+            player.setMediaSource(
+                MergingMediaSource(
+                    true,
+                    mediaSourceFactory.createMediaSource(prepared.mediaItem),
+                    mediaSourceFactory.createMediaSource(audioItem),
+                ),
+            )
+        } else {
+            player.setMediaItem(prepared.mediaItem)
+        }
         player.prepare()
         subtitlePicked = false
         audioAnnounced = false
         selectedSubtitleKey = SubtitleOption.Off.key
+        selectedSubtitleLang = null
         subtitleOptions = listOf(SubtitleOption.Off)
         val start = if (resume && settings.resumeEnabled && !item.isLive) {
             library.startPosition(item, remotePosition(item))
@@ -407,13 +441,14 @@ fun PlayerScreen(
         }
         library.touch(item, start)
         library.noteListPlay(session.listId, item)
-        val nearEnd = item.durationMs > 0L && start >= item.durationMs - 2_000L
+        val total = library.watch.durationMs(item).takeIf { it > 0L } ?: item.durationMs
+        val nearEnd = total > 0L && start >= total - 2_000L
         val avi = item.format.equals("AVI", true)
         val offerResume = askResume && resume && settings.resumeEnabled &&
-            !item.isLive && start >= 5_000L && !nearEnd
-        player.setPlaybackSpeed(speed)
+            !item.isLive && start >= 1_000L && !nearEnd
+        player.setPlaybackSpeed(PlaybackSettings.snapSpeed(speed))
         if (offerResume) {
-            resumeOffer = start to item.durationMs
+            resumeOffer = start to total
             player.pause()
         } else {
             resumeOffer = null
@@ -426,7 +461,9 @@ fun PlayerScreen(
         Log.i("GrokPlayer", "open ${item.format} prepare ${android.os.SystemClock.elapsedRealtime() - openedAt}ms")
         controls = true
         previewVisible = false
-        previewFrames = emptyMap()
+        previewFrames = SeekPreviewPlan.times(item.durationMs.coerceAtLeast(total), seekStepMs)
+            .mapNotNull { time -> PreviewGrabber.cached(item.uri, time)?.let { time to it } }
+            .toMap()
         skipNextUp = true
         skipNextUpRef.set(true)
         nextUpVisible = false
@@ -499,7 +536,10 @@ fun PlayerScreen(
                 atLiveEdge = true
                 liveOffsetMs = 0L
                 pausedLiveAt = 0L
-                position = player.currentPosition
+                if (pendingSeek == null) {
+                    position = player.currentPosition
+                    if (!previewVisible) previewPos = position
+                }
                 duration = windowDuration.takeIf { it > 0 && it != C.TIME_UNSET } ?: item.durationMs
                 val remain = duration - position
                 nextUpVisible = settings.autoNext &&
@@ -569,8 +609,50 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(previewPos, video.uri, previewVisible, seekBarFocused, duration, seekStepMs) {
-        if (!previewVisible || !seekBarFocused) return@LaunchedEffect
+    LaunchedEffect(pendingSeek) {
+        val target = pendingSeek ?: return@LaunchedEffect
+        delay(80)
+        if (pendingSeek != target) return@LaunchedEffect
+        player.seekTo(target)
+        if (video.isLive) {
+            pendingSeek = null
+            return@LaunchedEffect
+        }
+        var waited = 0
+        while (waited < 900 && player.playbackState != androidx.media3.common.Player.STATE_READY) {
+            delay(40)
+            waited += 40
+        }
+        delay(80)
+        capturePlayerFrame(playerView)?.let { frame ->
+            PreviewGrabber.put(video.uri, target, frame)
+            previewFrames = previewFrames + (target to frame)
+        }
+        pendingSeek = null
+    }
+
+    LaunchedEffect(video.id, duration, seekStepMs) {
+        if (video.isLive || duration <= 0L) return@LaunchedEffect
+        val times = SeekPreviewPlan.times(duration, seekStepMs)
+        times.forEach { time ->
+            PreviewGrabber.cached(video.uri, time)?.let {
+                previewFrames = previewFrames + (time to it)
+            }
+        }
+        val around = seekCursor(previewVisible, previewPos, position)
+        PreviewGrabber.preload(
+            context = context,
+            uri = video.uri,
+            path = video.path,
+            timesMs = times,
+            aroundMs = around,
+        ) { time, frame ->
+            previewFrames = previewFrames + (time to frame)
+        }
+    }
+
+    LaunchedEffect(previewPos, video.uri, previewVisible, duration, seekStepMs) {
+        if (!previewVisible) return@LaunchedEffect
         val times = seekTimes(duration, seekStepMs)
         val selected = times.minByOrNull { kotlin.math.abs(it - previewPos) } ?: previewPos
         val index = times.indexOf(selected).coerceAtLeast(0)
@@ -582,23 +664,6 @@ fun PlayerScreen(
                 previewFrames = previewFrames + (time to it)
             }
         }
-        delay(80)
-        capturePlayerFrame(playerView)?.let { frame ->
-            previewFrames = previewFrames + (previewPos to frame)
-        }
-        delay(280)
-        val stillMissing = window.filter { it !in previewFrames && PreviewGrabber.cached(video.uri, it) == null }
-        if (stillMissing.isNotEmpty()) {
-            PreviewGrabber.loadWindow(
-                context,
-                video.uri,
-                video.path,
-                stillMissing,
-                allowExo = false,
-            ) { time, frame ->
-                previewFrames = previewFrames + (time to frame)
-            }
-        }
     }
 
     fun closePlayer() {
@@ -607,7 +672,8 @@ fun PlayerScreen(
             ThumbnailCache.save(context, key, frame, maxWidth = ThumbnailCache.HERO_WIDTH)
             ThumbnailCache.save(context, key, frame, maxWidth = ThumbnailCache.TILE_WIDTH)
         }
-        library.markPlayed(video, player.currentPosition)
+        val (pos, dur) = playClock(player, video.durationMs)
+        library.markPlayed(video, pos, dur)
         library.noteListPlay(session.listId, video)
         onClose(video.id)
     }
@@ -620,17 +686,29 @@ fun PlayerScreen(
     fun seekTo(ms: Long) {
         val total = duration.takeIf { it > 0 } ?: 0L
         val next = ms.coerceIn(0L, if (total > 0) total else Long.MAX_VALUE)
-        player.seekTo(next)
         position = next
         previewPos = next
-        previewVisible = true
+        previewVisible = !live
+        if (live) {
+            pendingSeek = null
+            player.seekTo(next)
+        } else {
+            pendingSeek = next
+        }
         showControls()
     }
 
     fun seekBy(delta: Long, steps: Int = 1) {
+        if (live) {
+            val jump = seekStepMs * steps.coerceAtLeast(1)
+            val from = player.currentPosition.takeIf { it > 0L } ?: position
+            seekTo(from + if (delta >= 0) jump else -jump)
+            return
+        }
         val times = seekTimes(duration, seekStepMs)
         if (times.isEmpty()) return
-        val current = times.minByOrNull { kotlin.math.abs(it - previewPos.coerceAtLeast(position)) } ?: times.first()
+        val cursor = seekCursor(previewVisible, previewPos, position)
+        val current = times.minByOrNull { kotlin.math.abs(it - cursor) } ?: times.first()
         val index = times.indexOf(current).coerceAtLeast(0)
         val nextIndex = if (delta >= 0) {
             (index + steps).coerceAtMost(times.lastIndex)
@@ -642,7 +720,8 @@ fun PlayerScreen(
 
     fun playIndex(newIndex: Int) {
         val current = session.queue[index]
-        library.markPlayed(current, player.currentPosition)
+        val (pos, dur) = playClock(player, current.durationMs)
+        library.markPlayed(current, pos, dur)
         library.noteListPlay(session.listId, current)
         index = newIndex
     }
@@ -658,6 +737,7 @@ fun PlayerScreen(
     fun pickSubtitle(option: SubtitleOption) {
         subtitlePicked = true
         selectedSubtitleKey = option.key
+        selectedSubtitleLang = option.language
         applySubtitleChoice(player, option)
         subtitleOpen = false
         toast = if (option.isOff) "Altyazı kapalı" else option.label
@@ -980,7 +1060,7 @@ fun PlayerScreen(
                 width = 300.dp,
                 absorbOpeningOk = false,
                 actions = audioOptions.map { option ->
-                    ModalAction(option.label) { pickAudio(option) }
+                    ModalAction(option.label, icon = Icons.AutoMirrored.Outlined.VolumeUp) { pickAudio(option) }
                 },
             )
         }
@@ -993,7 +1073,7 @@ fun PlayerScreen(
                 width = 300.dp,
                 absorbOpeningOk = false,
                 actions = subtitleOptions.map { option ->
-                    ModalAction(option.label) { pickSubtitle(option) }
+                    ModalAction(option.label, icon = Icons.Outlined.ClosedCaption) { pickSubtitle(option) }
                 },
             )
         }
@@ -1003,7 +1083,7 @@ fun PlayerScreen(
                 offer = com.grokplayer.tv.data.link.ResumeOffer(
                     title = video.title,
                     seconds = startMs / 1000.0,
-                    duration = (durationMs.takeIf { it > startMs } ?: (startMs * 2)).coerceAtLeast(startMs + 1_000L) / 1000.0,
+                    duration = (durationMs.takeIf { it > startMs } ?: startMs).coerceAtLeast(startMs) / 1000.0,
                 ),
                 onContinue = {
                     val avi = video.format.equals("AVI", true)
@@ -1395,7 +1475,9 @@ private fun SeekStrip(
                         .background(Color.Black),
                     contentAlignment = Alignment.Center,
                 ) {
-                    val frame = frames[time]
+                    val frame = frames[time] ?: frames.minByOrNull { kotlin.math.abs(it.key - time) }
+                        ?.takeIf { kotlin.math.abs(it.key - time) <= 1_500L }
+                        ?.value
                     if (frame != null) {
                         Image(frame, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                     }
@@ -1409,6 +1491,17 @@ private fun SeekStrip(
             }
         }
     }
+}
+
+private fun playClock(player: androidx.media3.common.Player, fallback: Long): Pair<Long, Long> {
+    val pos = player.currentPosition.coerceAtLeast(0L)
+    val reported = player.duration.takeIf { it > 0L && it != C.TIME_UNSET } ?: fallback
+    val dur = if (player.playbackState == androidx.media3.common.Player.STATE_ENDED && pos in 1L until reported) {
+        pos
+    } else {
+        reported
+    }
+    return pos to dur.coerceAtLeast(pos)
 }
 
 private fun capturePlayerBitmap(view: PlayerView?): Bitmap? {
@@ -1465,24 +1558,49 @@ private data class PreparedPlay(
     val userAgent: String?,
     val captions: List<YtCaptionTrack> = emptyList(),
     val audios: List<YtAudioTrack> = emptyList(),
+    val audioSidecar: java.io.File? = null,
 )
 
 private fun preparePlay(context: android.content.Context, video: com.grokplayer.tv.data.LibraryVideo): PreparedPlay {
     val raw = video.uri.toString()
-    val lanFile = raw.contains("/v1/file")
-    val youtubeId = YouTubeResolver.videoId(raw)
+    val local = localPlaybackFile(video.path, video.uri.takeIf { it.scheme == "file" }?.path)
+    if (local != null) {
+        val kind = sniffContainer(local)
+        val playUri = android.net.Uri.fromFile(local)
+        val builder = MediaItem.Builder().setUri(playUri)
+        Log.i("GrokPlayer", "open local ${local.name} kind=$kind bytes=${local.length()}")
+        when (kind) {
+            "ts", "m2ts" -> builder.setMimeType(MimeTypes.VIDEO_MP2T)
+            "avi" -> builder.setMimeType("video/x-msvideo")
+            "m3u8" -> builder.setMimeType(MimeTypes.APPLICATION_M3U8)
+            "mpd" -> builder.setMimeType(MimeTypes.APPLICATION_MPD)
+        }
+        val sidecars = sidecarSubtitleConfigs(video)
+        if (sidecars.isNotEmpty()) builder.setSubtitleConfigurations(sidecars)
+        return PreparedPlay(
+            mediaItem = builder.build(),
+            referer = video.referer,
+            userAgent = video.userAgent,
+            audioSidecar = if (kind == "m3u8") null else sidecarAudioFile(video, local),
+        )
+    }
+    val source = video.originUrl?.takeIf { it.startsWith("http") }
+        ?: raw.takeIf { it.startsWith("http") }
+        ?: raw
+    val lanFile = source.contains("/v1/file")
+    val youtubeId = YouTubeResolver.videoId(source)
         ?: video.originUrl?.let { YouTubeResolver.videoId(it) }
     val youtube = if (!lanFile && youtubeId != null) {
-        val page = video.originUrl?.takeIf { YouTubeResolver.videoId(it) != null } ?: raw
+        val page = video.originUrl?.takeIf { YouTubeResolver.videoId(it) != null } ?: source
         YouTubeResolver.resolve(context, youtubeId, page)
     } else {
         null
     }
     val resolved = when {
-        lanFile -> raw
+        lanFile -> source
         youtube != null -> youtube.playUrl
-        raw.startsWith("http") -> StreamProbe.playUrl(raw)
-        else -> raw
+        source.startsWith("http") -> StreamProbe.playUrl(source)
+        else -> source
     }
     val builder = MediaItem.Builder().setUri(resolved)
     Log.i(

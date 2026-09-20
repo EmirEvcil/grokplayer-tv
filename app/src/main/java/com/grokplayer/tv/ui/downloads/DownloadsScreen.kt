@@ -15,6 +15,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -162,7 +167,7 @@ fun DownloadsScreen(
                 extraActions = buildList {
                     if (item.status == DownloadStatus.Done) {
                         add(
-                            com.grokplayer.tv.ui.components.ModalAction("Oynat") {
+                            com.grokplayer.tv.ui.components.ModalAction("Oynat", icon = Icons.Filled.PlayArrow) {
                                 closeOptions()
                                 onPlay(listOf(item.toVideo()), 0)
                             },
@@ -170,7 +175,7 @@ fun DownloadsScreen(
                     }
                     if (item.status == DownloadStatus.Failed) {
                         add(
-                            com.grokplayer.tv.ui.components.ModalAction("Tekrar dene") {
+                            com.grokplayer.tv.ui.components.ModalAction("Tekrar dene", icon = Icons.Outlined.Refresh) {
                                 downloads.retry(item.id)
                                 closeOptions()
                             },
@@ -178,7 +183,7 @@ fun DownloadsScreen(
                     }
                     if (item.status == DownloadStatus.Running || item.status == DownloadStatus.Queued) {
                         add(
-                            com.grokplayer.tv.ui.components.ModalAction("İptal et") {
+                            com.grokplayer.tv.ui.components.ModalAction("İptal et", icon = Icons.Outlined.Close) {
                                 downloads.cancel(item.id)
                                 closeOptions()
                             },
@@ -186,7 +191,7 @@ fun DownloadsScreen(
                     }
                 },
                 trailingActions = listOf(
-                    com.grokplayer.tv.ui.components.ModalAction("Sil") {
+                    com.grokplayer.tv.ui.components.ModalAction("Sil", icon = Icons.Outlined.Delete) {
                         val list = downloads.items
                         val idx = list.indexOfFirst { it.id == item.id }
                         lastFocusedId = list.getOrNull(idx + 1)?.id ?: list.getOrNull(idx - 1)?.id

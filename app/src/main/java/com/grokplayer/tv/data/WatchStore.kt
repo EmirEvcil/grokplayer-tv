@@ -25,10 +25,29 @@ object WatchLogic {
     const val WATCHED_RATIO = 0.90f
     const val REMAINING_MS = 15_000L
 
+    private val dropQuery = setOf(
+        "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+        "si", "feature", "pp", "fbclid", "gclid", "t", "start", "time_continue",
+    )
+
+    fun originIdentity(raw: String): String {
+        val yt = com.grokplayer.tv.data.scan.YouTubeResolver.videoId(raw)
+        if (yt != null) return "youtube:$yt"
+        val trimmed = raw.trim().substringBefore('#').lowercase()
+        val base = trimmed.substringBefore('?')
+        val query = trimmed.substringAfter('?', missingDelimiterValue = "")
+        if (query.isBlank()) return base
+        val kept = query.split('&').filter { part ->
+            val name = part.substringBefore('=').lowercase()
+            name.isNotBlank() && name !in dropQuery
+        }
+        return if (kept.isEmpty()) base else "$base?${kept.joinToString("&")}"
+    }
+
     fun key(isVod: Boolean, originUrl: String?, path: String?, id: String): String? {
         if (!isVod) return null
         val remote = originUrl?.ifBlank { null }
-        if (remote != null) return remote.substringBefore('?').lowercase()
+        if (remote != null) return originIdentity(remote)
         path?.let { raw ->
             val file = java.io.File(raw)
             if (file.isFile) return mediaFileKey(file.name, file.length())
@@ -47,7 +66,7 @@ object WatchLogic {
     fun isFinished(positionMs: Long, durationMs: Long): Boolean {
         if (durationMs <= 0L || positionMs < MIN_WATCH_MS) return false
         if (positionMs >= (durationMs * WATCHED_RATIO).toLong()) return true
-        return durationMs - positionMs <= REMAINING_MS
+        return durationMs >= 30_000L && durationMs - positionMs <= REMAINING_MS
     }
 
     fun status(record: WatchRecord?, live: Boolean): WatchStatus? {
@@ -77,8 +96,13 @@ object WatchLogic {
     }
 
     fun applyProgress(record: WatchRecord, positionMs: Long, durationMs: Long, now: Long): WatchRecord {
-        val dur = durationMs.takeIf { it > 0L } ?: record.durationMs
         val pos = positionMs.coerceAtLeast(0L)
+        val incoming = durationMs.takeIf { it > 0L }
+        val dur = when {
+            incoming != null && record.durationMs > 0L -> minOf(incoming, record.durationMs).coerceAtLeast(pos)
+            incoming != null -> incoming.coerceAtLeast(pos)
+            else -> record.durationMs.coerceAtLeast(pos)
+        }
         val manual = when {
             pos < MIN_WATCH_MS -> record.manual
             record.manual == WatchStatus.Unwatched -> null
@@ -161,6 +185,18 @@ class WatchStore(private val file: File, now: () -> Long = { System.currentTimeM
     fun progressFraction(video: LibraryVideo): Float? = WatchLogic.fraction(record(video), video.isLive || !video.isVod())
 
     fun positionMs(video: LibraryVideo): Long = record(video)?.positionMs ?: 0L
+
+    fun durationMs(video: LibraryVideo): Long {
+        val recorded = record(video)?.durationMs ?: 0L
+        val pos = record(video)?.positionMs ?: 0L
+        val labeled = video.durationMs
+        val best = when {
+            recorded > 0L && labeled > 0L -> minOf(recorded, labeled)
+            recorded > 0L -> recorded
+            else -> labeled
+        }
+        return best.coerceAtLeast(pos)
+    }
 
     fun feedback(video: LibraryVideo): WatchFeedback? = record(video)?.feedback
 

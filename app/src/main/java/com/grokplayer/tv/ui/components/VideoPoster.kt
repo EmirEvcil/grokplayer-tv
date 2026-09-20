@@ -20,10 +20,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -62,6 +64,7 @@ fun VideoPoster(
     originUrl: String? = null,
     referer: String? = null,
     userAgent: String? = null,
+    captionOverlay: Boolean = false,
     overlay: @Composable (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
@@ -71,7 +74,9 @@ fun VideoPoster(
     var failed by remember(cacheKey, maxWidth) { mutableStateOf(false) }
     var duration by remember(cacheKey) { mutableLongStateOf(durationMs) }
     var preview by remember { mutableStateOf(false) }
+    val ytId = YouTubeResolver.videoId(originUrl.orEmpty()) ?: YouTubeResolver.videoId(uri.toString())
     val artwork = posterUrl?.takeIf { it.startsWith("http") }
+        ?: ytId?.let { YouTubeResolver.posterUrl(it) }
 
     LaunchedEffect(cacheKey, maxWidth, timeMs, artwork) {
         if (artwork != null) return@LaunchedEffect
@@ -161,13 +166,37 @@ fun VideoPoster(
             )
         }
         overlay?.invoke()
+        if (captionOverlay && title.isNotBlank()) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            0.35f to GrokInk.copy(alpha = 0.55f),
+                            1f to GrokInk.copy(alpha = 0.92f),
+                        ),
+                    )
+                    .padding(start = 8.dp, end = 8.dp, top = 28.dp, bottom = 8.dp),
+            ) {
+                Text(
+                    title,
+                    style = GrokType.cardTitle,
+                    color = GrokWhite,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(end = 52.dp),
+                )
+            }
+        }
         if (isLive) {
             Text(
                 "CANLI",
                 style = GrokType.cardMeta,
                 color = GrokWhite,
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
+                    .align(if (captionOverlay) Alignment.TopStart else Alignment.BottomStart)
                     .padding(8.dp)
                     .background(GrokPink, RoundedCornerShape(4.dp))
                     .padding(horizontal = 6.dp, vertical = 2.dp),

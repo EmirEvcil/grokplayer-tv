@@ -26,7 +26,10 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Sort
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.CreateNewFolder
+import androidx.compose.material.icons.outlined.Replay
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -480,7 +483,7 @@ fun VideosScreen(
                 onDismiss = { closeOverlays() },
                 extraActions = buildList {
                     add(
-                        com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.resume)) {
+                        com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.resume), icon = Icons.Filled.PlayArrow) {
                             optionsFor = null
                             savedScrollIndex = gridState.firstVisibleItemIndex
                             savedScrollOffset = gridState.firstVisibleItemScrollOffset
@@ -489,7 +492,7 @@ fun VideosScreen(
                         },
                     )
                     add(
-                        com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.play_from_start)) {
+                        com.grokplayer.tv.ui.components.ModalAction(stringResource(R.string.play_from_start), icon = Icons.Outlined.Replay) {
                             optionsFor = null
                             savedScrollIndex = gridState.firstVisibleItemIndex
                             savedScrollOffset = gridState.firstVisibleItemScrollOffset
@@ -501,7 +504,7 @@ fun VideosScreen(
                 trailingActions = buildList {
                     if (canSend) {
                         add(
-                            com.grokplayer.tv.ui.components.ModalAction("PC’ye gönder") {
+                            com.grokplayer.tv.ui.components.ModalAction("PC’ye gönder", icon = Icons.Outlined.Computer) {
                                 optionsFor = null
                                 onSend(video)
                             },
@@ -584,7 +587,14 @@ private fun VideoTile(
                     }
                 },
             )
-            Text(video.title, style = GrokType.cardTitle, color = GrokWhite, modifier = Modifier.padding(top = 8.dp))
+            Text(
+                video.title,
+                style = GrokType.cardTitle,
+                color = GrokWhite,
+                maxLines = 2,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 8.dp),
+            )
             Text(
                 text = "${video.durationMs.formatClock()} · ${video.format} · ${video.sourceLabel}",
                 style = GrokType.cardMeta,

@@ -84,6 +84,14 @@ import com.grokplayer.tv.ui.components.EmptyState
 import com.grokplayer.tv.ui.components.FilterChip
 import com.grokplayer.tv.ui.components.FocusableAction
 import com.grokplayer.tv.ui.components.ListResumeBar
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Folder
 import com.grokplayer.tv.ui.components.ModalAction
 import com.grokplayer.tv.ui.components.ModalMenu
 import com.grokplayer.tv.ui.components.VideoPoster
@@ -120,7 +128,7 @@ fun ListelerScreen(
     collections: CollectionStore,
     downloads: DownloadStore,
     localVideos: List<LibraryVideo> = emptyList(),
-    onPlay: (List<LibraryVideo>, Int, Boolean, String?) -> Unit,
+    onPlay: (List<LibraryVideo>, Int, Boolean, Boolean, String?) -> Unit,
     watch: WatchStore,
     onNotice: (String) -> Unit,
     playerOpen: Boolean = false,
@@ -313,11 +321,17 @@ fun ListelerScreen(
     val detailOpen = openPlaylist != null || openCollection != null
     val collectionBrowseOpen = openCollectionsPlaylist != null || offlineBrowse
 
-    fun playQueue(queue: List<LibraryVideo>, index: Int, resume: Boolean = true, listId: String? = null) {
+    fun playQueue(
+        queue: List<LibraryVideo>,
+        index: Int,
+        resume: Boolean = true,
+        listId: String? = null,
+        ask: Boolean = false,
+    ) {
         val (vods, start) = vodQueue(queue, index)
         if (vods.isEmpty()) return
         vods.getOrNull(start)?.id?.let { rememberVideo(it) }
-        onPlay(vods, start, resume, listId)
+        onPlay(vods, start, resume, ask, listId)
     }
 
     fun goBack(): Boolean {
@@ -598,7 +612,7 @@ fun ListelerScreen(
                                 onPlay = { video ->
                                     rememberVideo(video.id)
                                     val index = playlistVideos.indexOfFirst { it.id == video.id }.coerceAtLeast(0)
-                                    playQueue(playlistVideos, index, resume = true, listId = listId)
+                                    playQueue(playlistVideos, index, resume = true, listId = listId, ask = true)
                                 },
                                 onMenu = { video ->
                                     rememberVideo(video.id)
@@ -610,9 +624,11 @@ fun ListelerScreen(
                                 progressOf = { watch.progressFraction(it) },
                                 resumeVideo = watch.resumeIn(playlistVideos, listId),
                                 resumePosition = { watch.positionMs(it) },
+                                resumeDuration = { watch.durationMs(it) },
+                                enablePreview = !playerOpen,
                                 onResume = { video ->
                                     val index = playlistVideos.indexOfFirst { it.id == video.id }.coerceAtLeast(0)
-                                    playQueue(playlistVideos, index, resume = true, listId = listId)
+                                    playQueue(playlistVideos, index, resume = true, listId = listId, ask = false)
                                 },
                                 onRestart = { video ->
                                     val index = playlistVideos.indexOfFirst { it.id == video.id }.coerceAtLeast(0)
@@ -644,7 +660,7 @@ fun ListelerScreen(
                                 onPlay = { video ->
                                     rememberVideo(video.id)
                                     val index = bucket.items.indexOfFirst { it.id == video.id }.coerceAtLeast(0)
-                                    playQueue(bucket.items, index, resume = true, listId = listId)
+                                    playQueue(bucket.items, index, resume = true, listId = listId, ask = true)
                                 },
                                 onMenu = { video ->
                                     rememberVideo(video.id)
@@ -657,9 +673,11 @@ fun ListelerScreen(
                                 progressOf = { watch.progressFraction(it) },
                                 resumeVideo = watch.resumeIn(bucket.items, listId),
                                 resumePosition = { watch.positionMs(it) },
+                                resumeDuration = { watch.durationMs(it) },
+                                enablePreview = !playerOpen,
                                 onResume = { video ->
                                     val index = bucket.items.indexOfFirst { it.id == video.id }.coerceAtLeast(0)
-                                    playQueue(bucket.items, index, resume = true, listId = listId)
+                                    playQueue(bucket.items, index, resume = true, listId = listId, ask = false)
                                 },
                                 onRestart = { video ->
                                     val index = bucket.items.indexOfFirst { it.id == video.id }.coerceAtLeast(0)
@@ -678,7 +696,7 @@ fun ListelerScreen(
                 meta = "Oynatma listesi",
                 onDismiss = { playlistMenu = null },
                 actions = listOf(
-                    ModalAction("Tümünü oynat") {
+                    ModalAction("Tümünü oynat", icon = Icons.AutoMirrored.Outlined.PlaylistPlay) {
                         playlistMenu = null
                         rememberList(item.id)
                         videoAnchor = FocusAnchor()
@@ -696,7 +714,7 @@ fun ListelerScreen(
                             }
                         }
                     },
-                    ModalAction("Tümünü indir") {
+                    ModalAction("Tümünü indir", icon = Icons.Outlined.Download) {
                         playlistMenu = null
                         if (item.custom) {
                             enqueue(playlists.videosOf(item.id))
@@ -708,11 +726,11 @@ fun ListelerScreen(
                             }
                         }
                     },
-                    ModalAction("Listeden kaldır") {
+                    ModalAction("Listeden kaldır", icon = Icons.Outlined.Delete) {
                         playlists.remove(item.id)
                         playlistMenu = null
                     },
-                    ModalAction("Kapat") { playlistMenu = null },
+                    ModalAction("Kapat", icon = Icons.Outlined.Close) { playlistMenu = null },
                 ),
             )
         }
@@ -724,28 +742,28 @@ fun ListelerScreen(
                 onDismiss = { collectionMenu = null },
                 actions = buildList {
                     add(
-                        ModalAction("Tümünü oynat") {
+                        ModalAction("Tümünü oynat", icon = Icons.AutoMirrored.Outlined.PlaylistPlay) {
                             collectionMenu = null
                             if (bucket.items.isNotEmpty()) playQueue(bucket.items, 0, resume = false, listId = WatchLogic.collectionId(bucket.id))
                         },
                     )
                     if (!offlineBrowse) {
                         add(
-                            ModalAction("Tümünü indir") {
+                            ModalAction("Tümünü indir", icon = Icons.Outlined.Download) {
                                 collectionMenu = null
                                 enqueue(bucket.items)
                             },
                         )
                     }
                     add(
-                        ModalAction("Yeniden adlandır") {
+                        ModalAction("Yeniden adlandır", icon = Icons.Outlined.Edit) {
                             collectionMenu = null
                             renameTarget = bucket.id to bucket.name
                         },
                     )
                     if (!bucket.isGeneral) {
                         add(
-                            ModalAction("Sil") {
+                            ModalAction("Sil", icon = Icons.Outlined.Delete) {
                                 val playlistId = activePlaylistId
                                 collections.delete(bucket.id, playlistId, bucket.items.map { it.id })
                                 collectionMenu = null
@@ -754,7 +772,7 @@ fun ListelerScreen(
                             },
                         )
                     }
-                    add(ModalAction("Kapat") { collectionMenu = null })
+                    add(ModalAction("Kapat", icon = Icons.Outlined.Close) { collectionMenu = null })
                 },
             )
         }
@@ -784,20 +802,20 @@ fun ListelerScreen(
                 watch = watch,
                 extraActions = buildList {
                     add(
-                        ModalAction("Oynat") {
+                        ModalAction("Oynat", icon = Icons.Filled.PlayArrow) {
                             val queue = openCollection?.items ?: playlistVideos
                             val index = queue.indexOfFirst { it.id == video.id }.coerceAtLeast(0)
                             videoMenu = null
                             if (queue.isNotEmpty()) {
                                 val listId = openCollection?.let { WatchLogic.collectionId(it.id) }
                                     ?: openPlaylist?.let { WatchLogic.playlistId(it.id) }
-                                playQueue(queue, index, resume = true, listId = listId)
+                                playQueue(queue, index, resume = true, listId = listId, ask = true)
                             }
                         },
                     )
                     if (!offlineBrowse) {
                         add(
-                            ModalAction("İndir") {
+                            ModalAction("İndir", icon = Icons.Outlined.Download) {
                                 enqueue(listOf(video))
                                 videoMenu = null
                             },
@@ -807,7 +825,7 @@ fun ListelerScreen(
                 trailingActions = buildList {
                     if (openPlaylist?.custom == true) {
                         add(
-                            ModalAction("Listeden çıkar") {
+                            ModalAction("Listeden çıkar", icon = Icons.Outlined.Delete) {
                                 playlists.removeVideo(openPlaylist!!.id, video.id)
                                 playlistVideos = playlists.videosOf(openPlaylist!!.id)
                                 videosByPlaylist = videosByPlaylist + (openPlaylist!!.id to playlistVideos)
@@ -827,12 +845,12 @@ fun ListelerScreen(
                 absorbOpeningOk = false,
                 onDismiss = { addFolderOpen = false },
                 actions = extras.map { (path, title) ->
-                    ModalAction(title) {
+                    ModalAction(title, icon = Icons.Outlined.Folder) {
                         playlists.add(host.id, path, title)
                         addFolderOpen = false
                         onNotice("Oynatma listesine eklendi")
                     }
-                } + listOf(ModalAction("Kapat") { addFolderOpen = false }),
+                } + listOf(ModalAction("Kapat", icon = Icons.Outlined.Close) { addFolderOpen = false }),
             )
         }
 
@@ -882,21 +900,21 @@ fun ListelerScreen(
                 meta = "Otomatik gruplar yeniden kurulur",
                 onDismiss = { resetOpen = false },
                 actions = listOf(
-                    ModalAction(stringResource(R.string.reset_full)) {
+                    ModalAction(stringResource(R.string.reset_full), icon = Icons.Outlined.Delete) {
                         collections.resetFull(activePlaylistId)
                         resetOpen = false
                         openCollection = null
                         syncOpenCollection()
                         onNotice("Koleksiyonlar sıfırlandı")
                     },
-                    ModalAction(stringResource(R.string.reset_keep_custom)) {
+                    ModalAction(stringResource(R.string.reset_keep_custom), icon = Icons.Outlined.Folder) {
                         collections.resetKeepCustom(activePlaylistId)
                         resetOpen = false
                         openCollection = null
                         syncOpenCollection()
                         onNotice("Otomatik koleksiyonlar sıfırlandı")
                     },
-                    ModalAction("Kapat") { resetOpen = false },
+                    ModalAction("Kapat", icon = Icons.Outlined.Close) { resetOpen = false },
                 ),
             )
         }
@@ -1139,8 +1157,10 @@ private fun VideoList(
     progressOf: (LibraryVideo) -> Float? = { null },
     resumeVideo: LibraryVideo? = null,
     resumePosition: (LibraryVideo) -> Long = { 0L },
+    resumeDuration: (LibraryVideo) -> Long = { it.durationMs },
     onResume: (LibraryVideo) -> Unit = {},
     onRestart: (LibraryVideo) -> Unit = {},
+    enablePreview: Boolean = true,
 ) {
     Column(Modifier.fillMaxSize().padding(top = 16.dp)) {
         Text(title, style = GrokType.section, color = GrokWhite)
@@ -1154,12 +1174,14 @@ private fun VideoList(
             ListResumeBar(
                 video = resumeVideo,
                 positionMs = resumePosition(resumeVideo),
+                durationMs = resumeDuration(resumeVideo),
                 onResume = { onResume(resumeVideo) },
                 onRestart = { onRestart(resumeVideo) },
                 resumeFocus = requester("action:resume"),
                 restartFocus = requester("action:restart"),
                 up = tabFocus,
                 down = requester("action:playall"),
+                progress = progressOf(resumeVideo),
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 12.dp)) {
@@ -1179,7 +1201,8 @@ private fun VideoList(
         LazyVerticalGrid(
             columns = GridCells.Fixed(3),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 28.dp),
             modifier = Modifier.weight(1f).fillMaxWidth(),
         ) {
             itemsIndexed(videos, key = { _, item -> item.id }) { index, video ->
@@ -1196,42 +1219,25 @@ private fun VideoList(
                         .onFocusChanged { if (it.isFocused) onFocused(video.id) },
                     shape = RoundedCornerShape(8.dp),
                 ) { focused ->
-                    Column(Modifier.fillMaxWidth()) {
-                        VideoPoster(
-                            uri = video.uri,
-                            title = video.title,
-                            focused = focused,
-                            path = video.path,
-                            format = video.format,
-                            posterUrl = video.posterUrl,
-                            durationMs = video.durationMs,
-                            isLive = video.isLive,
-                            enablePreview = true,
-                            originUrl = video.originUrl,
-                            referer = video.referer,
-                            userAgent = video.userAgent,
-                            progress = progressOf(video),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .aspectRatio(16f / 9f),
-                        )
-                        Text(
-                            video.title,
-                            style = GrokType.cardTitle,
-                            color = GrokWhite,
-                            modifier = Modifier.padding(top = 8.dp),
-                        )
-                        Text(
-                            text = buildString {
-                                if (video.durationMs > 0L) append(video.durationMs.formatClock()).append(" · ")
-                                append(video.format)
-                                if (video.sourceLabel.isNotBlank()) append(" · ").append(video.sourceLabel)
-                            },
-                            style = GrokType.cardMeta,
-                            color = GrokMuted,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
-                    }
+                    VideoPoster(
+                        uri = video.uri,
+                        title = video.title,
+                        focused = focused,
+                        path = video.path,
+                        format = video.format,
+                        posterUrl = video.posterUrl,
+                        durationMs = video.durationMs,
+                        isLive = video.isLive,
+                        enablePreview = enablePreview,
+                        originUrl = video.originUrl,
+                        referer = video.referer,
+                        userAgent = video.userAgent,
+                        progress = progressOf(video),
+                        captionOverlay = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f),
+                    )
                 }
             }
         }
