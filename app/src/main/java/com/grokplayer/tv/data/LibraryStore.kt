@@ -1,5 +1,7 @@
 package com.grokplayer.tv.data
 
+import android.app.PendingIntent
+import android.content.ContentUris
 import android.content.Context
 import android.net.Uri
 import android.os.Build
@@ -16,6 +18,11 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
+
+data class LocalDeleteResult(
+    val gone: Boolean,
+    val pending: PendingIntent? = null,
+)
 
 class LibraryStore(context: Context) {
     private val app = context.applicationContext
@@ -38,6 +45,8 @@ class LibraryStore(context: Context) {
     private val scanLock = Mutex()
     @Volatile
     private var downloadTitleOf: (String) -> String? = { null }
+    private var hidden by mutableStateOf(loadHidden())
+    private var downloadCache: List<LibraryVideo> = emptyList()
 
     init {
         loadDurations()
@@ -78,10 +87,11 @@ class LibraryStore(context: Context) {
                 val result = Perf.measure("scan") { scanAll() }
                 persistIndex(result)
                 persistDurations()
-                result.map { video ->
-                    val titled = video.path?.let { downloadTitleOf(it) }
-                    if (titled != null && titled != video.title) video.copy(title = titled) else video
+                val titled = result.map { video ->
+                    val name = video.path?.let { downloadTitleOf(it) }
+                    if (name != null && name != video.title) video.copy(title = name) else video
                 }
+                upsertDownloads(titled, downloadCache)
             }
             android.util.Log.i("GrokPlayer", "perf library size=${videos.size} durations=${durations.size}")
         } finally {
@@ -184,6 +194,54 @@ class LibraryStore(context: Context) {
         applyDownloadTitles()
     }
 
+    fun mergeDownloads(done: List<LibraryVideo>) {
+        downloadCache = done.filter { !isHidden(it) }
+        videos = upsertDownloads(videos, downloadCache)
+    }
+
+    private fun loadHidden(): Set<String> =
+        prefs.getStringSet("hidden", emptySet())?.toSet().orEmpty()
+
+    private fun persistHidden() {
+        prefs.edit().putStringSet("hidden", hidden).apply()
+    }
+
+    private fun isHidden(video: LibraryVideo): Boolean {
+        if (video.id in hidden) return true
+        val path = video.path?.let { normalizePath(it) }
+        return path != null && path in hidden
+    }
+
+    private fun hide(video: LibraryVideo) {
+        hidden = hidden + video.id + listOfNotNull(video.path?.let { normalizePath(it) })
+        persistHidden()
+    }
+
+    private fun upsertDownloads(base: List<LibraryVideo>, done: List<LibraryVideo>): List<LibraryVideo> {
+        if (done.isEmpty()) {
+            return base.filterNot { it.id.startsWith("download:") }
+        }
+        val current = base.toMutableList()
+        done.forEach { d ->
+            val idx = current.indexOfFirst { it.id == d.id || (it.path != null && it.path == d.path) }
+            if (idx >= 0) {
+                val old = current[idx]
+                current[idx] = old.copy(
+                    title = d.title.ifBlank { old.title },
+                    durationMs = maxOf(old.durationMs, d.durationMs),
+                    format = d.format.ifBlank { old.format },
+                    originUrl = old.originUrl ?: d.originUrl,
+                    path = old.path ?: d.path,
+                    uri = d.uri,
+                )
+            } else {
+                current += d
+            }
+        }
+        val keep = done.map { it.id }.toSet()
+        return current.filterNot { it.id.startsWith("download:") && it.id !in keep }
+    }
+
     fun applyDownloadTitles() {
         val current = videos
         if (current.isEmpty()) return
@@ -199,6 +257,185 @@ class LibraryStore(context: Context) {
         opened = opened.filterNot { it.id == id }
         persistState()
         persistOpened()
+    }
+
+    fun deleteLocal(video: LibraryVideo): LocalDeleteResult {
+        val path = video.path
+        val file = path?.let { java.io.File(it) }
+        if (file != null) {
+            deleteOwnedFile(file)
+        }
+        val uris = mediaStoreUris(video, path)
+        var pending: PendingIntent? = null
+        uris.forEach { uri ->
+            val deleted = deleteContentUri(uri)
+            if (deleted.pending != null) pending = deleted.pending
+        }
+        path?.let { extra ->
+            mediaStoreUris(video, extra).forEach { uri ->
+                if (uri !in uris) {
+                    val deleted = deleteContentUri(uri)
+                    if (deleted.pending != null) pending = deleted.pending
+                }
+            }
+        }
+        if (video.uri.scheme == "file") {
+            video.uri.path?.let { java.io.File(it).takeIf { f -> f.exists() }?.delete() }
+        }
+        file?.takeIf { it.exists() }?.let { leftover ->
+            runCatching { leftover.setWritable(true) }
+            leftover.delete()
+            if (leftover.exists()) leftover.deleteRecursively()
+        }
+        if (stillOnDisk(video, file) && pending == null && uris.isNotEmpty() && Build.VERSION.SDK_INT >= 30) {
+            pending = runCatching { MediaStore.createDeleteRequest(app.contentResolver, uris) }.getOrNull()
+        }
+        if (stillOnDisk(video, file)) {
+            android.util.Log.w("GrokPlayer", "delete leftover path=$path uri=${video.uri} pending=${pending != null}")
+            return LocalDeleteResult(gone = false, pending = pending)
+        }
+        forgetLocal(video)
+        return LocalDeleteResult(gone = true)
+    }
+
+    fun finishLocalDelete(video: LibraryVideo): Boolean {
+        val file = video.path?.let { java.io.File(it) }
+        if (stillOnDisk(video, file)) {
+            file?.let { deleteOwnedFile(it) }
+            mediaStoreUris(video, video.path).forEach { deleteContentUri(it) }
+        }
+        if (stillOnDisk(video, file)) return false
+        forgetLocal(video)
+        return true
+    }
+
+    private fun forgetLocal(video: LibraryVideo) {
+        hide(video)
+        forget(video.id)
+        video.path?.let { forgetPath(it) }
+        videos = videos.filterNot { it.id == video.id || (video.path != null && it.path == video.path) }
+        persistOpened()
+        persistState()
+        persistIndex(videos)
+    }
+
+    private fun stillOnDisk(video: LibraryVideo, file: java.io.File?): Boolean {
+        if (file?.exists() == true) return true
+        if (video.uri.scheme == "file") {
+            val path = video.uri.path ?: return false
+            return java.io.File(path).exists()
+        }
+        if (video.uri.scheme == "content") {
+            return runCatching {
+                app.contentResolver.openAssetFileDescriptor(video.uri, "r")?.use { true } == true
+            }.getOrDefault(false)
+        }
+        return false
+    }
+
+    private fun deleteContentUri(uri: Uri): LocalDeleteResult {
+        if (uri.scheme != "content") return LocalDeleteResult(false)
+        return try {
+            val gone = app.contentResolver.delete(uri, null, null) > 0 ||
+                runCatching { DocumentFile.fromSingleUri(app, uri)?.delete() == true }.getOrDefault(false)
+            LocalDeleteResult(gone)
+        } catch (e: SecurityException) {
+            android.util.Log.w("GrokPlayer", "delete uri=$uri ${e.javaClass.simpleName}")
+            LocalDeleteResult(false, recoverableDeleteIntent(e))
+        }
+    }
+
+    private fun mediaStoreUris(video: LibraryVideo, path: String?): List<Uri> {
+        val out = LinkedHashSet<Uri>()
+        if (video.uri.scheme == "content") out += video.uri
+        val resolver = app.contentResolver
+        val collections = buildList {
+            add(MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+            if (Build.VERSION.SDK_INT >= 29) {
+                add(MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY))
+                add(MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL))
+            }
+        }
+        val want = path?.let { normalizePath(it) }
+        val name = path?.let { java.io.File(it).name }
+        val relative = path?.let { mediaRelativePath(it) }
+        collections.forEach { collection ->
+            val projection = mutableListOf(
+                MediaStore.Video.Media._ID,
+                MediaStore.Video.Media.DISPLAY_NAME,
+            )
+            if (Build.VERSION.SDK_INT >= 29) projection += MediaStore.Video.Media.RELATIVE_PATH
+            val dataColName = MediaStore.Video.Media.DATA
+            projection += dataColName
+            val cursor = runCatching {
+                resolver.query(collection, projection.toTypedArray(), null, null, null)
+            }.getOrNull() ?: return@forEach
+            cursor.use { rows ->
+                val idCol = rows.getColumnIndex(MediaStore.Video.Media._ID)
+                val nameCol = rows.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME)
+                val relCol = if (Build.VERSION.SDK_INT >= 29) {
+                    rows.getColumnIndex(MediaStore.Video.Media.RELATIVE_PATH)
+                } else {
+                    -1
+                }
+                val dataCol = rows.getColumnIndex(dataColName)
+                while (rows.moveToNext()) {
+                    val id = rows.getLong(idCol)
+                    val display = if (nameCol >= 0) rows.getString(nameCol) else null
+                    val data = if (dataCol >= 0) rows.getString(dataCol) else null
+                    val rel = if (relCol >= 0) rows.getString(relCol) else null
+                    val match = when {
+                        want != null && data != null && normalizePath(data) == want -> true
+                        want != null && relative != null && name != null &&
+                            display == name &&
+                            rel?.replace('\\', '/')?.trim('/')?.lowercase() == relative -> true
+                        want == null && video.uri.scheme == "content" &&
+                            ContentUris.withAppendedId(collection, id) == video.uri -> true
+                        else -> false
+                    }
+                    if (match) out += ContentUris.withAppendedId(collection, id)
+                }
+            }
+        }
+        return out.toList()
+    }
+
+    private fun recoverableDeleteIntent(error: SecurityException): PendingIntent? {
+        if (Build.VERSION.SDK_INT < 29) return null
+        if (error.javaClass.name != "android.app.RecoverableSecurityException") return null
+        return runCatching {
+            val action = error.javaClass.getMethod("getUserAction").invoke(error) ?: return null
+            action.javaClass.getMethod("getActionIntent").invoke(action) as? PendingIntent
+        }.getOrNull()
+    }
+
+    private fun mediaRelativePath(path: String): String? {
+        val normalized = path.replace('\\', '/')
+        val roots = listOf("/storage/emulated/0/", "/sdcard/", "/storage/self/primary/")
+        val stripped = roots.firstNotNullOfOrNull { root ->
+            if (normalized.startsWith(root, ignoreCase = true)) normalized.substring(root.length) else null
+        } ?: return null
+        val dir = stripped.substringBeforeLast('/')
+        return dir.trim('/').lowercase().takeIf { it.isNotBlank() }
+    }
+
+    private fun deleteOwnedFile(file: java.io.File): Boolean {
+        val downloads = DownloadPaths.dir(app)
+        var cursor: java.io.File? = file
+        while (cursor != null) {
+            val parent = cursor.parentFile
+            if (parent != null && parent.canonicalFile == downloads.canonicalFile &&
+                java.io.File(cursor, "meta.json").isFile
+            ) {
+                return cursor.deleteRecursively()
+            }
+            cursor = parent
+        }
+        if (file.parentFile?.resolve("meta.json")?.isFile == true) {
+            return file.parentFile?.deleteRecursively() == true
+        }
+        runCatching { file.setWritable(true) }
+        return file.delete() || !file.exists()
     }
 
     fun forgetPath(path: String) {
@@ -423,7 +660,7 @@ class LibraryStore(context: Context) {
             children.forEach { child ->
                 if (child.isDirectory) {
                     if (!child.name.startsWith('.')) stack.add(child)
-                } else if (isVideoName(child.name)) {
+                } else if (isVideoName(child.name) && shouldIndexVideo(child)) {
                     val path = child.absolutePath
                     val normalized = normalizePath(path)
                     if (normalized in byPath) {
@@ -514,7 +751,9 @@ class LibraryStore(context: Context) {
         video: LibraryVideo,
         path: String?,
     ) {
+        if (video.id in hidden) return
         val normalized = path?.let { normalizePath(it) }
+        if (normalized != null && normalized in hidden) return
         if (normalized != null) {
             val existingId = byPath[normalized]
             if (existingId != null) {
@@ -676,6 +915,22 @@ class LibraryStore(context: Context) {
 
         fun isVideoName(name: String): Boolean =
             name.substringAfterLast('.', "").lowercase() in videoExt
+
+        fun shouldIndexVideo(file: java.io.File): Boolean {
+            val ext = file.extension.lowercase()
+            if (ext == "seg" || ext == "m3u8") return false
+            val meta = file.parentFile?.resolve("meta.json")
+            if (meta?.isFile == true) {
+                if (ext == "ts" || ext == "m2ts" || ext == "mts") return false
+                val stem = runCatching {
+                    org.json.JSONObject(meta.readText()).optString("title")
+                }.getOrNull()?.let { DownloadOwnership.fileName(it) }
+                if (stem != null && !file.nameWithoutExtension.equals(stem, true)) return false
+                return ext == "mp4" && isPlayableDownload(file)
+            }
+            if (ext == "ts" || ext == "m2ts" || ext == "mts") return isPlayableDownload(file)
+            return true
+        }
 
         fun formatOf(name: String, mime: String?): String {
             val ext = name.substringAfterLast('.', "").uppercase()

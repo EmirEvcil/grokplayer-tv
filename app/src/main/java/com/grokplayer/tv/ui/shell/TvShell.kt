@@ -125,6 +125,9 @@ fun TvShell() {
     val downloads = remember { DownloadStore(context, settings) }
     LaunchedEffect(downloads.items) {
         library.bindDownloadTitles { path -> downloads.titleForPath(path) }
+        library.mergeDownloads(
+            downloads.items.filter { it.status == com.grokplayer.tv.data.DownloadStatus.Done }.map { it.toVideo() },
+        )
     }
     val link = remember { LinkController(context) }
     val linkUi by link.ui.collectAsState()
@@ -292,7 +295,7 @@ fun TvShell() {
                 SideRail(
                     selected = destination,
                     navFocus = navFocus,
-                    locked = focusLock.locked || session != null,
+                    locked = session != null,
                     onSelect = { destination = it },
                     onEnter = { dest ->
                         destination = dest
@@ -362,6 +365,12 @@ fun TvShell() {
                                 playlists = playlists,
                                 collections = collections,
                                 onNotice = { notice = it },
+                                onPurgeDownload = { video ->
+                                    val id = video.id.removePrefix("download:")
+                                    if (video.id.startsWith("download:")) downloads.remove(id)
+                                    downloads.items.firstOrNull { it.localPath != null && it.localPath == video.path }
+                                        ?.let { downloads.remove(it.id) }
+                                },
                                 focusVideoId = focusVideoId,
                                 onFocusConsumed = { focusVideoId = null },
                                 modifier = Modifier.fillMaxSize(),

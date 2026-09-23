@@ -96,6 +96,16 @@ object CollectionGrouper {
 
     fun isUser(id: String): Boolean = id.startsWith("user:")
 
+    fun isGeneralId(id: String): Boolean = id == GENERAL_ID || id.startsWith("general:")
+
+    fun homesAfterRemove(current: Set<String>, removed: String, playlistId: String): Set<String> {
+        val next = current - removed
+        val scoped = next.filter { inScope(it, playlistId) }
+        if (scoped.isNotEmpty()) return next
+        if (isUser(removed) || isGeneralId(removed)) return next
+        return next + generalId(playlistId)
+    }
+
     fun mergeKnown(
         known: Set<String>,
         playlistId: String,

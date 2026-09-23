@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.grokplayer.tv.data.MediaProbe
+import com.grokplayer.tv.data.posterUsesNetwork
 import com.grokplayer.tv.data.ThumbnailCache
 import com.grokplayer.tv.data.formatClock
 import com.grokplayer.tv.data.scan.YouTubeResolver
@@ -75,8 +76,11 @@ fun VideoPoster(
     var duration by remember(cacheKey) { mutableLongStateOf(durationMs) }
     var preview by remember { mutableStateOf(false) }
     val ytId = YouTubeResolver.videoId(originUrl.orEmpty()) ?: YouTubeResolver.videoId(uri.toString())
-    val artwork = posterUrl?.takeIf { it.startsWith("http") }
-        ?: ytId?.let { YouTubeResolver.posterUrl(it) }
+    val artwork = if (posterUsesNetwork(path)) {
+        posterUrl?.takeIf { it.startsWith("http") } ?: ytId?.let { YouTubeResolver.posterUrl(it) }
+    } else {
+        null
+    }
 
     LaunchedEffect(cacheKey, maxWidth, timeMs, artwork) {
         if (artwork != null) return@LaunchedEffect

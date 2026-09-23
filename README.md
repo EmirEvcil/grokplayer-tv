@@ -4,7 +4,7 @@ Android TV / Google TV client for the GrokPlayer ecosystem. Leanback shell in Ko
 
 Companion apps: [GrokPlayer (Windows)](https://github.com/EmirEvcil/grokplayer) · [Chrome extension](https://github.com/EmirEvcil/grokplayer-extension)
 
-Current build: **0.2.64** (`com.grokplayer.tv`, minSdk 24, targetSdk 35). Turkish UI.
+Current build: **0.2.70** (versionCode 72, `com.grokplayer.tv`, minSdk 24, targetSdk 35). Turkish UI.
 
 ## Features
 
@@ -27,7 +27,7 @@ Current build: **0.2.64** (`com.grokplayer.tv`, minSdk 24, targetSdk 35). Turkis
 - **Playlists:** custom lists on the TV, plus PC shared folders when a PC is paired
 - **Collections:** auto-grouped related videos (offline from the device, online from a PC playlist)
 - Collection poster titles overlay two lines with ellipsis
-- Create / rename / delete collections; move a video between them
+- Create / rename / delete collections; move a video between them, or remove it from one. A video removed from Genel stays out
 - Reset collections (all, or keep custom ones)
 - Play all / download all
 - Last-watched resume bar on a playlist or collection (**Devam et** auto-resumes; card/menu play still asks)
@@ -64,18 +64,33 @@ Current build: **0.2.64** (`com.grokplayer.tv`, minSdk 24, targetSdk 35). Turkis
 - Duration is stored from the playlist (`#EXTINF`) and shown on the card and player
 - Unplayable leftover files (old concatenated fragments) are marked failed so they can be retried
 - Download quality in settings (720p / 480p / best)
+- With all-files access, downloads are stored in `Movies/GrokPlayer/downloads` and survive uninstall. Without it they stay in the app’s external files. Yedekler can request that permission
 
 ### Player
 - Overlay player; Back closes and restores last focus
 - Queue with previous / next, next-up, auto-next (finished items are marked watched)
 - In-player resume popup (**Kaldığın yer**) on VOD when opened from a card or menu; uses the real duration
-- Seek with frame previews: a window around the playhead is preloaded on local/progressive files; capture after seek is the fallback (including local HLS)
+- Seek with frame previews around the playhead. A local file is read from disk, a downloaded HLS playlist is read from its segments, and a YouTube VOD uses that video’s storyboard. A card stays empty until its own frame is ready
 - Speed, subtitle, and audio/dub menus (icons on every row)
 - Selected speed is applied again when the decoder is ready
-- YouTube captions (overlay + sidecar VTT) and dubbed audio tracks
+- YouTube captions for that video (srv3, then json3, shown as overlay cues and a sidecar VTT) and dubbed audio tracks
 - Live: seek in the window, go-to-live, live edge, no watch-progress chrome
 - AVI via libVLC; other VOD via ExoPlayer (HLS / DASH / progressive / local HLS)
 - A completed download is opened from the local file, not re-resolved from YouTube
+
+### Yedekler
+Settings → Yedekler. Named compressed `.gpb` archives of settings, lists, collections, streams, folders, download records, paired devices, and watch history (including likes). Video files are not included.
+
+- **Yedek oluştur** and **Birleştir** sit side by side
+- Backups are grouped as Bugün, Dün, or a `d/M/yyyy` date. A row shows the name, size, and a short count such as `2 liste · 12 koleksiyon · 1 indirme`
+- OK opens that backup: category counts (Ayarlar, Listeler, Koleksiyonlar, İndirmeler, Yayınlar, İzleme ve beğeniler, plus Klasörler or Cihazlar when the backup has them), then the items in the category. A list or collection opens its videos
+- Offline collections are included. They are built from finished downloads and, in new backups, from a snapshot of local videos
+- **Geri yüklemeyi incele** compares the backup with this device and shows `N eklenecek · N değişecek · N silinecek`. Rows are marked + / − / →. A grouped row opens the lists or collections, and those open the video names that will be added or removed. Playback changes (speed, resume, and the other settings) stay as single rows
+- **Vazgeç** and **Geri yükle** stay at the bottom. Restore applies the backup, remaps download paths onto this device, and restarts the app. It does not delete video files. If nothing in the records differs, the preview says so
+- **Sil** asks for confirmation. Vazgeç starts focused
+- **Birleştir**: OK checks or unchecks a backup, and the header shows how many are selected. **Devam et** needs at least two. The next page merges oldest to newest: the newer value wins on the same record, list and collection memberships are combined, and the newer watch record (including the like) is kept. Records that exist in only one backup are kept. Name the result and **Kaydet**
+- Back moves up one level and returns to the previous row and scroll position. Hold OK is not used on this page
+- Archives are written to `Movies/GrokPlayer/backups` when shared storage is available. Otherwise the page offers **Paylaşılan depoya izin ver**, and a backup deleted with the app is gone
 
 ### Cihazlar (LAN)
 - Pair with GrokPlayer on the PC (`10.0.2.2` from the emulator)
@@ -91,14 +106,15 @@ Current build: **0.2.64** (`com.grokplayer.tv`, minSdk 24, targetSdk 35). Turkis
 - Audio: preferred language, stereo-only
 - Captions: default on, language, size
 - Downloads: quality, folder, free space
+- Backups: create, browse, restore, merge, delete
 - Devices: paired PCs, transfers
 - About: version, package, device, Android
 
 ### Remote and focus
 - D-pad 10-foot navigation
-- OK plays; hold OK opens options in one sheet (details / add / mark — Back returns to the previous page, no stacked modals)
+- OK plays; hold OK opens options on videos, streams, lists, and downloads in one sheet (details / add / mark — Back returns to the previous page, no stacked modals). Yedekler uses OK only
 - IME: first Back hides the keyboard, later Back leaves the name page
-- Last focused row restored after overlays
+- Last focused row restored after overlays, and when leaving a backup page
 
 ## Requirements
 

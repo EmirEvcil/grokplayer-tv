@@ -12,8 +12,6 @@
     <string name="recently_opened">Son açılanlar</string>
     <string name="source_local">Yerel</string>
     <string name="source_stream">Akış</string>
-    <string name="coming_soon">Yakında</string>
-    <string name="coming_soon_body">Bu sayfa yakında eklenecek.</string>
     <string name="search">Ara</string>
     <string name="playback_placeholder">Oynatma henüz bağlanmadı.</string>
     <string name="filter_all">Tümü</string>
@@ -117,6 +115,7 @@
     <string name="cat_audio">Ses</string>
     <string name="cat_captions">Altyazı</string>
     <string name="cat_downloads">İndirmeler</string>
+    <string name="cat_backup">Yedekler</string>
     <string name="cat_devices">Cihazlar</string>
     <string name="send_to_pc">PC’ye gönder</string>
     <string name="cat_about">Hakkında</string>

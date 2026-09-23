@@ -40,6 +40,33 @@ class CollectionResetTest {
     }
 
     @Test
+    fun fullResetClearsExcludedGeneralSoVideoReturns() {
+        val state = CollectionReset.State(
+            names = emptyMap(),
+            homes = emptyMap(),
+            userIds = emptyList(),
+            known = emptySet(),
+            excluded = mapOf("v1" to setOf("general:p1"), "v2" to setOf("general:p2")),
+        )
+        val next = CollectionReset.full("p1", state)
+        assertTrue(next.excluded["v1"].isNullOrEmpty())
+        assertEquals(setOf("general:p2"), next.excluded["v2"])
+    }
+
+    @Test
+    fun fullResetClearsUnscopedGeneralExclude() {
+        val state = CollectionReset.State(
+            names = emptyMap(),
+            homes = emptyMap(),
+            userIds = emptyList(),
+            known = emptySet(),
+            excluded = mapOf("v1" to setOf("general")),
+        )
+        val next = CollectionReset.full("p1", state)
+        assertTrue(next.excluded["v1"].isNullOrEmpty())
+    }
+
+    @Test
     fun keepCustomClearsAutoHomesAndNames() {
         val state = CollectionReset.State(
             names = mapOf("user:p1:a" to "Mine", "auto:p1:show" to "Renamed"),
@@ -73,5 +100,18 @@ class CollectionResetTest {
         val other = buckets.first { it.name == "Other" }
         assertTrue(show.items.contains("Show S01E01"))
         assertTrue(other.items.contains("Show S01E01"))
+    }
+
+    @Test
+    fun removingOneHomeKeepsTheOtherInSamePlaylist() {
+        val homes = setOf("user:p1:a", "user:p1:b")
+        val next = CollectionGrouper.homesAfterRemove(homes, "user:p1:a", "p1")
+        assertEquals(setOf("user:p1:b"), next)
+    }
+
+    @Test
+    fun removingAutoHomeWithoutOthersPinsGeneral() {
+        val next = CollectionGrouper.homesAfterRemove(setOf("auto:p1:show"), "auto:p1:show", "p1")
+        assertEquals(setOf("general:p1"), next)
     }
 }

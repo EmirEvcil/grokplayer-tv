@@ -10,8 +10,6 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Size
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import java.io.File
 
 data class MediaDetails(
@@ -175,42 +173,46 @@ object MediaProbe {
         return containerDuration(context, uri, path)
     }
 
-    fun frameBitmap(context: Context, uri: Uri, path: String?, timeMs: Long, maxWidth: Int = 640): Bitmap? {
+    fun frameBitmap(
+        context: Context,
+        uri: Uri,
+        path: String?,
+        timeMs: Long,
+        maxWidth: Int = 640,
+        exact: Boolean = false,
+    ): Bitmap? {
         val local = path?.let { File(it) }?.takeIf { it.isFile && it.canRead() }
-        if (local == null && ThumbnailCache.playbackActive) return null
+        val remote = uri.scheme == "http" || uri.scheme == "https"
+        if (remote && local == null && ThumbnailCache.playbackActive) return null
+        val option = if (exact) {
+            MediaMetadataRetriever.OPTION_CLOSEST
+        } else {
+            MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+        }
         val fromRetriever = withRetriever(context, uri, path) { retriever ->
             val timeUs = timeMs.coerceAtLeast(0L) * 1000L
-            retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                ?: retriever.getFrameAtTime(-1)
-                ?: retriever.frameAtTime
+            retriever.getFrameAtTime(timeUs, option)
+                ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
         }
         if (fromRetriever != null) return scale(fromRetriever, maxWidth)
         return scale(thumbnailUtils(path), maxWidth)
     }
 
-    fun frameImage(context: Context, uri: Uri, path: String?, timeMs: Long): ImageBitmap? =
-        frameBitmap(context, uri, path, timeMs)?.asImageBitmap()
+    fun previewFrameAt(context: Context, playlist: File, timeMs: Long, maxWidth: Int = 240): Bitmap? {
+        val slice = hlsPreviewSlice(playlist, timeMs) ?: return null
+        return frameInSegment(context, slice.file, slice.offsetMs, maxWidth)
+    }
 
-    fun framesAt(
-        context: Context,
-        uri: Uri,
-        path: String?,
-        timesMs: List<Long>,
-        maxWidth: Int = 240,
-    ): List<Pair<Long, Bitmap>> {
-        if (timesMs.isEmpty()) return emptyList()
-        return withRetriever(context, uri, path) { retriever ->
-            val out = ArrayList<Pair<Long, Bitmap>>(timesMs.size)
-            timesMs.forEach { time ->
-                val raw = retriever.getFrameAtTime(
-                    time.coerceAtLeast(0L) * 1_000L,
-                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                ) ?: return@forEach
-                val scaled = scale(raw, maxWidth) ?: return@forEach
-                out += time to scaled
-            }
-            out
-        }.orEmpty()
+    fun frameInSegment(context: Context, file: File, offsetMs: Long, maxWidth: Int = 240): Bitmap? {
+        if (!file.isFile || !file.canRead()) return null
+        if (offsetMs > 80L) {
+            SegmentDecoder.frameAt(file, offsetMs, maxWidth)?.let { return it }
+        }
+        val raw = withRetriever(context, Uri.fromFile(file), file.absolutePath) { retriever ->
+            retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.getFrameAtTime(-1)
+        }
+        return scale(raw, maxWidth)
     }
 
     private fun retrieverDuration(context: Context, uri: Uri, path: String?): Long {

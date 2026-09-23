@@ -36,12 +36,11 @@ object ThumbnailCache {
             if (playbackActive) return null
             val at = timeMs.coerceAtLeast(0L)
             val bitmap = try {
-                if (remote) {
+                if (remote && path?.let { File(it).isFile } != true) {
                     ExoFrameGrab.grab(context, uri, at, timeoutMs = 8_000L)
                 } else {
-                    MediaProbe.frameBitmap(context, uri, path, at, maxWidth)
-                        ?: MediaProbe.frameBitmap(context, uri, path, 1_000L, maxWidth)
-                        ?: MediaProbe.frameBitmap(context, uri, path, 0L, maxWidth)
+                    localPreviewBitmap(context, path, uri, at, maxWidth)
+                        ?: MediaProbe.frameBitmap(context, uri, path, at, maxWidth)
                         ?: ExoFrameGrab.grab(context, uri, at, timeoutMs = 8_000L, rejectBlack = false)
                 }
             } catch (_: Throwable) {
@@ -49,6 +48,21 @@ object ThumbnailCache {
             } ?: return null
             return write(context, key, bitmap, recycle = true, maxWidth = maxWidth)
         }
+    }
+
+    private fun localPreviewBitmap(
+        context: Context,
+        path: String?,
+        uri: Uri,
+        timeMs: Long,
+        maxWidth: Int,
+    ): Bitmap? {
+        val file = path?.let { File(it) }?.takeIf { it.isFile && it.canRead() } ?: return null
+        if (file.extension.equals("m3u8", true)) {
+            val slice = hlsPreviewSlice(file, timeMs) ?: return null
+            return MediaProbe.frameInSegment(context, slice.file, slice.offsetMs, maxWidth)
+        }
+        return MediaProbe.frameBitmap(context, uri, path, timeMs, maxWidth, exact = true)
     }
 
     fun save(context: Context, key: String, bitmap: Bitmap, maxWidth: Int = TILE_WIDTH): File? {

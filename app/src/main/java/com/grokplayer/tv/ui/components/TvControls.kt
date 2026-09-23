@@ -1,8 +1,6 @@
 package com.grokplayer.tv.ui.components
 
-import androidx.annotation.DrawableRes
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -14,7 +12,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -26,6 +23,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -51,8 +50,6 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.grokplayer.tv.ui.theme.GrokInk
 import com.grokplayer.tv.ui.theme.GrokLine
@@ -74,6 +71,13 @@ data class ModalAction(
     val onClick: () -> Unit,
 )
 
+internal const val MODAL_VISIBLE_ACTIONS = 4
+internal const val MODAL_ACTION_ROW_DP = 48
+
+internal fun modalListMaxRows(total: Int, visible: Int = MODAL_VISIBLE_ACTIONS): Int =
+    total.coerceAtMost(visible).coerceAtLeast(0)
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ModalMenu(
     title: String,
@@ -90,6 +94,7 @@ fun ModalMenu(
     focusHeader: Boolean = false,
     onFocusedIndex: (Int) -> Unit = {},
     onBack: () -> Unit = onDismiss,
+    dismissOnScrim: Boolean = true,
 ) {
     RememberFocusLock()
     InterceptBack {
@@ -107,7 +112,7 @@ fun ModalMenu(
                     .clickable(
                         indication = null,
                         interactionSource = remember { MutableInteractionSource() },
-                        onClick = onDismiss,
+                        onClick = { if (dismissOnScrim) onDismiss() },
                     )
                     .focusProperties {
                         canFocus = false
@@ -118,7 +123,6 @@ fun ModalMenu(
                 Modifier
                     .width(width)
                     .heightIn(max = 520.dp)
-                    .verticalScroll(rememberScrollState())
                     .background(GrokSurface, RoundedCornerShape(12.dp))
                     .border(1.dp, GrokYellow.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
                     .padding(16.dp)
@@ -141,66 +145,83 @@ fun ModalMenu(
                     androidx.compose.foundation.layout.Spacer(Modifier.height(12.dp))
                 }
                 if (header != null && keys.isNotEmpty()) header(keys.first())
-                actions.forEachIndexed { index, action ->
-                    key(focusNonce, index, action.id) {
-                    val last = actions.lastIndex
-                    val interaction = remember(focusNonce, action.id, index) { MutableInteractionSource() }
-                    val focused = interaction.collectIsFocusedAsState().value
-                    val once = remember(action.id, index, focusNonce) { com.grokplayer.tv.data.OkAction() }
-                    fun fire() {
-                        once.fire { action.onClick() }
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(keys[index])
-                            .onFocusChanged { if (it.isFocused) onFocusedIndex(index) }
-                            .focusProperties {
-                                canFocus = trapFocus
-                                if (!trapFocus) onEnter = { FocusRequester.Cancel }
-                                left = FocusRequester.Cancel
-                                right = FocusRequester.Cancel
-                                up = when {
-                                    index == 0 && headerFocus != null -> headerFocus
-                                    index == 0 -> keys[0]
-                                    else -> keys[index - 1]
-                                }
-                                down = keys[if (index == last) last else index + 1]
-                            }
-                            .background(if (focused) GrokYellow else Color.Transparent, RoundedCornerShape(6.dp))
-                            .clickable(interactionSource = interaction, indication = null, onClick = { fire() })
-                            .onPreviewKeyEvent { event ->
-                                val ok = event.key == Key.DirectionCenter || event.key == Key.Enter
-                                if (!ok) return@onPreviewKeyEvent false
-                                if (event.type == KeyEventType.KeyDown) {
-                                    if (com.grokplayer.tv.data.ModalOk.shouldFire(
-                                            down = true,
-                                            repeatCount = event.nativeKeyEvent.repeatCount,
-                                        )
-                                    ) {
-                                        fire()
+                val listScope = rememberCoroutineScope()
+                val visible = modalListMaxRows(actions.size)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = (MODAL_ACTION_ROW_DP * visible.coerceAtLeast(1)).dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    actions.forEachIndexed { index, action ->
+                        key(focusNonce, index, action.id) {
+                        val last = actions.lastIndex
+                        val interaction = remember(focusNonce, action.id, index) { MutableInteractionSource() }
+                        val focused = interaction.collectIsFocusedAsState().value
+                        val once = remember(action.id, index, focusNonce) { com.grokplayer.tv.data.OkAction() }
+                        val bring = remember(action.id, index, focusNonce) { BringIntoViewRequester() }
+                        fun fire() {
+                            once.fire { action.onClick() }
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = MODAL_ACTION_ROW_DP.dp)
+                                .bringIntoViewRequester(bring)
+                                .focusRequester(keys[index])
+                                .onFocusChanged {
+                                    if (it.isFocused) {
+                                        onFocusedIndex(index)
+                                        listScope.launch { bring.bringIntoView() }
                                     }
                                 }
-                                true
+                                .focusProperties {
+                                    canFocus = trapFocus
+                                    if (!trapFocus) onEnter = { FocusRequester.Cancel }
+                                    left = FocusRequester.Cancel
+                                    right = FocusRequester.Cancel
+                                    up = when {
+                                        index == 0 && headerFocus != null -> headerFocus
+                                        index == 0 -> keys[0]
+                                        else -> keys[index - 1]
+                                    }
+                                    down = keys[if (index == last) last else index + 1]
+                                }
+                                .background(if (focused) GrokYellow else Color.Transparent, RoundedCornerShape(6.dp))
+                                .clickable(interactionSource = interaction, indication = null, onClick = { fire() })
+                                .onPreviewKeyEvent { event ->
+                                    val ok = event.key == Key.DirectionCenter || event.key == Key.Enter
+                                    if (!ok) return@onPreviewKeyEvent false
+                                    if (event.type == KeyEventType.KeyDown) {
+                                        if (com.grokplayer.tv.data.ModalOk.shouldFire(
+                                                down = true,
+                                                repeatCount = event.nativeKeyEvent.repeatCount,
+                                            )
+                                        ) {
+                                            fire()
+                                        }
+                                    }
+                                    true
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            if (action.icon != null) {
+                                Icon(
+                                    action.icon,
+                                    contentDescription = null,
+                                    tint = if (focused) GrokInk else GrokWhite,
+                                    modifier = Modifier.size(18.dp),
+                                )
                             }
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        if (action.icon != null) {
-                            Icon(
-                                action.icon,
-                                contentDescription = null,
-                                tint = if (focused) GrokInk else GrokWhite,
-                                modifier = Modifier.size(18.dp),
+                            Text(
+                                text = action.label,
+                                style = GrokType.button,
+                                color = if (focused) GrokInk else GrokWhite,
                             )
                         }
-                        Text(
-                            text = action.label,
-                            style = GrokType.button,
-                            color = if (focused) GrokInk else GrokWhite,
-                        )
-                    }
+                        }
                     }
                 }
             }
@@ -208,7 +229,7 @@ fun ModalMenu(
     }
     LaunchedEffect(focusNonce, focusHeader) {
         if (!focusHeader || headerFocus == null) return@LaunchedEffect
-        repeat(2) {
+        repeat(8) {
             if (runCatching { headerFocus.requestFocus() }.getOrDefault(false)) return@LaunchedEffect
             kotlinx.coroutines.delay(40)
         }
@@ -216,7 +237,7 @@ fun ModalMenu(
     LaunchedEffect(title, actions.size, startIndex, focusNonce) {
         if (focusHeader) return@LaunchedEffect
         val target = keys.getOrNull(startIndex.coerceIn(0, keys.lastIndex)) ?: keys.first()
-        repeat(2) {
+        repeat(8) {
             if (runCatching { target.requestFocus() }.getOrDefault(false)) return@LaunchedEffect
             kotlinx.coroutines.delay(40)
         }
@@ -237,14 +258,17 @@ fun FocusableAction(
     var focused by remember { mutableStateOf(false) }
     var longFired by remember { mutableStateOf(false) }
     var suppressClick by remember { mutableStateOf(false) }
+    var longAt by remember { mutableStateOf(0L) }
     var holdJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     fun cancelHold() {
         holdJob?.cancel()
         holdJob = null
     }
     fun fireLong() {
-        if (longFired) return
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - longAt < 600L) return
         cancelHold()
+        longAt = now
         longFired = true
         suppressClick = true
         onLongClick?.invoke()
@@ -323,12 +347,7 @@ fun FocusableAction(
                     null
                 } else {
                     {
-                        if (!longFired) {
-                            cancelHold()
-                            longFired = true
-                            suppressClick = true
-                            onLongClick()
-                        }
+                        fireLong()
                     }
                 },
             ),
@@ -353,40 +372,6 @@ fun OutlineButton(
             modifier = Modifier
                 .border(1.5.dp, stroke, shape)
                 .background(fill, shape)
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            if (icon != null) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = if (focused) GrokInk else GrokWhite,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-            Text(
-                text = label,
-                style = GrokType.button,
-                color = if (focused) GrokInk else GrokWhite,
-            )
-        }
-    }
-}
-
-@Composable
-fun FilledFocusButton(
-    label: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    icon: ImageVector? = null,
-) {
-    val shape = RoundedCornerShape(8.dp)
-    FocusableAction(onClick = onClick, modifier = modifier, shape = shape) { focused ->
-        Row(
-            modifier = Modifier
-                .background(if (focused) GrokYellow else Color.Transparent, shape)
-                .border(1.5.dp, if (focused) GrokYellow else GrokLine, shape)
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -446,47 +431,6 @@ fun FilterChip(
                 .clip(RoundedCornerShape(1.dp))
                 .background(if (selected) GrokPink else Color.Transparent),
         )
-    }
-}
-
-@Composable
-fun MediaPoster(
-    @DrawableRes artwork: Int,
-    title: String,
-    focused: Boolean,
-    modifier: Modifier = Modifier,
-    progress: Float? = null,
-    overlay: @Composable BoxScope.() -> Unit = {},
-) {
-    val shape = RoundedCornerShape(8.dp)
-    Box(
-        modifier
-            .clip(shape)
-            .then(if (focused) Modifier.border(2.dp, GrokYellow, shape) else Modifier),
-    ) {
-        Image(
-            painter = painterResource(artwork),
-            contentDescription = title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize(),
-        )
-        overlay()
-        if (progress != null) {
-            Box(
-                Modifier
-                    .align(Alignment.BottomStart)
-                    .fillMaxWidth()
-                    .height(3.dp)
-                    .background(Color.White.copy(alpha = 0.18f)),
-            )
-            Box(
-                Modifier
-                    .align(Alignment.BottomStart)
-                    .fillMaxWidth(progress.coerceIn(0.08f, 1f))
-                    .height(3.dp)
-                    .background(GrokPink),
-            )
-        }
     }
 }
 

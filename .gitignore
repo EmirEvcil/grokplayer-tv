@@ -1,6 +1,7 @@
 *.iml
 .gradle/
 .idea/
+.vs/
 .DS_Store
 /build
 /captures

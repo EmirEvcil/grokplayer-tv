@@ -81,11 +81,23 @@ class WatchStoreTest {
     }
 
     @Test
-    fun watchDurationPrefersShorterPlaybackLength() {
+    fun reachingTheEndCountsAsWatched() {
+        var rec = WatchLogic.applyProgress(WatchRecord(), 20_000L, 100_000L, 1L)
+        rec = WatchLogic.applyProgress(rec, 100_000L, 100_000L, 2L)
+        assertEquals(100_000L, rec.durationMs)
+        assertEquals(WatchStatus.Watched, WatchLogic.status(rec, false))
+    }
+
+    @Test
+    fun playheadIsNotTreatedAsTheVideoLength() {
         var rec = WatchLogic.applyProgress(WatchRecord(), 10_000L, 20_000L, 1L)
         rec = WatchLogic.applyProgress(rec, 10_000L, 10_000L, 2L)
-        assertEquals(10_000L, rec.durationMs)
+        assertEquals(20_000L, rec.durationMs)
         assertEquals(10_000L, rec.positionMs)
+        assertEquals(WatchStatus.Watching, WatchLogic.status(rec, false))
+        val partial = WatchLogic.applyProgress(WatchRecord(), 30_000L, 30_000L, 1L)
+        assertEquals(0L, partial.durationMs)
+        assertEquals(WatchStatus.Watching, WatchLogic.status(partial, false))
     }
 
     @Test

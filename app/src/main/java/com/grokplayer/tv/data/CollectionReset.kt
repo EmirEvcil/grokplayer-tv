@@ -6,6 +6,7 @@ object CollectionReset {
         val homes: Map<String, Set<String>>,
         val userIds: List<String>,
         val known: Set<String>,
+        val excluded: Map<String, Set<String>> = emptyMap(),
     )
 
     fun full(scope: String, state: State): State {
@@ -15,6 +16,9 @@ object CollectionReset {
             homes = pruneHomes(state.homes) { !CollectionGrouper.inScope(it, scope) },
             userIds = state.userIds.filter { !CollectionGrouper.inScope(it, scope) },
             known = state.known.filter { !CollectionGrouper.inScope(it, scope) }.toSet(),
+            excluded = pruneHomes(state.excluded) { col ->
+                !CollectionGrouper.inScope(col, scope) && col != CollectionGrouper.GENERAL_ID
+            },
         )
     }
 
@@ -25,6 +29,10 @@ object CollectionReset {
             homes = pruneHomes(state.homes) { !CollectionGrouper.inScope(it, scope) || CollectionGrouper.isUser(it) },
             userIds = state.userIds,
             known = state.known.filter { !it.startsWith("auto:$scope:") }.toSet(),
+            excluded = pruneHomes(state.excluded) { col ->
+                (!CollectionGrouper.inScope(col, scope) || CollectionGrouper.isUser(col)) &&
+                    col != CollectionGrouper.GENERAL_ID
+            },
         )
     }
 

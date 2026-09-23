@@ -12,6 +12,8 @@ object YouTubeResolver {
     private val pathPattern = Regex("""youtube(?:-nocookie)?\.com/(?:live|embed|shorts|v)/([A-Za-z0-9_-]{11})""")
     internal const val chromeUa =
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+    internal const val androidUa =
+        "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip"
 
     fun watchUrl(raw: String, originUrl: String? = null): String? {
         val id = videoId(raw) ?: originUrl?.let { videoId(it) } ?: return null
@@ -32,6 +34,21 @@ object YouTubeResolver {
         queryPattern.find(text)?.groupValues?.get(1)?.let { return it }
         pathPattern.find(text)?.groupValues?.get(1)?.let { return it }
         return null
+    }
+
+    fun storyboardSpec(context: Context, videoId: String): String? {
+        val client = clients(videoId, null).firstOrNull() ?: return null
+        val json = PageScanner.postJson(
+            context,
+            "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+            client.body,
+            client.ua,
+            mapOf(
+                "X-YouTube-Client-Name" to client.id.toString(),
+                "X-YouTube-Client-Version" to client.version,
+            ),
+        ) ?: return null
+        return com.grokplayer.tv.data.StoryboardSpec.fromPlayerJson(json)
     }
 
     fun resolve(context: Context, id: String, pageUrl: String): ScanHit? {
@@ -56,7 +73,7 @@ object YouTubeResolver {
         val pageJson = extractAssignedJson(page, "ytInitialPlayerResponse")
         takeCaptions(pageJson)
         consider(parsePlayer(pageJson, id, pageUrl))
-        if (score(best) < 3 || audios.size <= 1) {
+        if (score(best) < 3 || audios.size <= 1 || captions.isEmpty()) {
             for (client in clients(id, visitor)) {
                 val extra = buildMap {
                     put("X-YouTube-Client-Name", client.id.toString())
@@ -72,7 +89,7 @@ object YouTubeResolver {
                 )
                 takeCaptions(json)
                 consider(parsePlayer(json, id, pageUrl, client.ua))
-                if (score(best) >= 3) break
+                if (score(best) >= 3 && audios.size > 1 && captions.isNotEmpty()) break
             }
         }
         val merged = YouTubeCaptions.withVisitor(
@@ -123,7 +140,12 @@ object YouTubeResolver {
             details?.optString("isLive").equals("true", true) ||
             liveNow ||
             pageUrl.contains("/live/", ignoreCase = true)
-        val seconds = details?.optString("lengthSeconds")?.toLongOrNull() ?: 0L
+        val seconds = details?.optString("lengthSeconds")?.toLongOrNull()
+            ?: details?.optLong("lengthSeconds")?.takeIf { it > 0L }
+            ?: root.optJSONObject("microformat")
+                ?.optJSONObject("playerMicroformatRenderer")
+                ?.optString("lengthSeconds")?.toLongOrNull()
+            ?: 0L
         val thumb = details?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
             ?.let { arr ->
                 (arr.length() - 1 downTo 0).firstNotNullOfOrNull { i ->
@@ -136,9 +158,10 @@ object YouTubeResolver {
             ?: streaming?.optString("dashManifestUrl")?.takeIf { it.isNotBlank() }
             ?: streaming?.let { bestProgressive(it) }
         val captions = YouTubeCaptions.parseTracks(root)
+        val storyboard = com.grokplayer.tv.data.StoryboardSpec.fromPlayerJson(json)
         Log.i(
             "GrokPlayer",
-            "yt $id status=${status.ifBlank { "?" }} title=${title.take(48)} hls=${!streaming?.optString("hlsManifestUrl").isNullOrBlank()} caps=${captions.size}",
+            "yt $id status=${status.ifBlank { "?" }} title=${title.take(48)} hls=${!streaming?.optString("hlsManifestUrl").isNullOrBlank()} caps=${captions.size} board=${!storyboard.isNullOrBlank()}",
         )
         if (playUrl.isNullOrBlank()) return null
         return ScanHit(
@@ -153,6 +176,7 @@ object YouTubeResolver {
             detail = if (live) "YouTube canlı" else formatClock(seconds),
             captions = captions,
             audios = YouTubeAudio.parse(root),
+            storyboardSpec = storyboard,
         )
     }
 
@@ -237,11 +261,11 @@ object YouTubeResolver {
         val safeId = JSONObject.quote(id)
         return listOf(
             Client(
-                "VISIONOS",
-                101,
-                "1.02",
-                chromeUa,
-                """{"context":{"client":{"clientName":"VISIONOS","clientVersion":"1.02","deviceMake":"Apple","deviceModel":"RealityDevice17,1","osName":"visionOS","osVersion":"26.5.23O471","hl":"en","gl":"US"$visit}},"videoId":$safeId,"contentCheckOk":true,"racyCheckOk":true}""",
+                "ANDROID",
+                3,
+                "20.10.38",
+                androidUa,
+                """{"context":{"client":{"clientName":"ANDROID","clientVersion":"20.10.38","androidSdkVersion":34,"osName":"Android","osVersion":"14","hl":"en","gl":"US"$visit}},"videoId":$safeId,"contentCheckOk":true,"racyCheckOk":true}""",
             ),
             Client(
                 "IOS",
@@ -251,11 +275,18 @@ object YouTubeResolver {
                 """{"context":{"client":{"clientName":"IOS","clientVersion":"21.26.4","deviceMake":"Apple","deviceModel":"iPhone16,2","osName":"iPhone","osVersion":"18.3.2.22D82","hl":"en","gl":"US"$visit}},"videoId":$safeId,"contentCheckOk":true,"racyCheckOk":true}""",
             ),
             Client(
-                "ANDROID",
-                3,
-                "20.10.38",
-                "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip",
-                """{"context":{"client":{"clientName":"ANDROID","clientVersion":"20.10.38","androidSdkVersion":34,"osName":"Android","osVersion":"14","hl":"en","gl":"US"$visit}},"videoId":$safeId,"contentCheckOk":true,"racyCheckOk":true}""",
+                "VISIONOS",
+                101,
+                "1.02",
+                chromeUa,
+                """{"context":{"client":{"clientName":"VISIONOS","clientVersion":"1.02","deviceMake":"Apple","deviceModel":"RealityDevice17,1","osName":"visionOS","osVersion":"26.5.23O471","hl":"en","gl":"US"$visit}},"videoId":$safeId,"contentCheckOk":true,"racyCheckOk":true}""",
+            ),
+            Client(
+                "TVHTML5",
+                7,
+                "7.20260707.07.00",
+                "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)",
+                """{"context":{"client":{"clientName":"TVHTML5","clientVersion":"7.20260707.07.00","hl":"en","gl":"US"$visit}},"videoId":$safeId,"contentCheckOk":true,"racyCheckOk":true}""",
             ),
         )
     }

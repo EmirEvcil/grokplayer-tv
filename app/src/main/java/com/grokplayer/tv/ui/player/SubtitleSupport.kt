@@ -84,6 +84,7 @@ internal fun mergeAudioOptions(
     youtube: List<com.grokplayer.tv.data.scan.YtAudioTrack>,
 ): List<AudioOption> {
     if (youtube.isEmpty()) return exo
+    if (exo.size >= 2) return exo
     val ytOptions = youtube.map { track ->
         AudioOption(
             key = "yt-a:${track.id}",
@@ -93,14 +94,13 @@ internal fun mergeAudioOptions(
             mime = track.mime,
         )
     }
-    val seen = youtube.map { it.language.lowercase() }.toSet()
-    val extra = exo.filter { option ->
-        val lang = option.language?.lowercase().orEmpty()
-        lang.isNotEmpty() && lang !in seen &&
-            !option.label.equals("Default", true) &&
-            option.label != "Orijinal"
+    if (exo.isEmpty()) return ytOptions
+    val have = exo.mapNotNull { it.language?.lowercase()?.take(2) }.toSet()
+    val extra = ytOptions.filter { option ->
+        val lang = option.language?.lowercase()?.take(2).orEmpty()
+        lang.isEmpty() || lang !in have
     }
-    return ytOptions + extra
+    return exo + extra
 }
 
 internal fun applyAudioChoice(player: Player, option: AudioOption) {
@@ -125,23 +125,19 @@ internal fun mergeSubtitleOptions(
     exo: List<SubtitleOption>,
     youtube: List<com.grokplayer.tv.data.scan.YtCaptionTrack>,
 ): List<SubtitleOption> {
-    val out = exo.toMutableList()
-    if (out.none { it.isOff }) out.add(0, SubtitleOption.Off)
-    youtube.forEach { track ->
-        val exists = out.any { option ->
-            !option.isOff && (
-                option.language?.lowercase() == track.language.lowercase() ||
-                    option.key.startsWith("yt:${track.language}")
-                )
-        }
-        if (!exists) {
-            out += SubtitleOption(
-                key = "yt:${track.language}:${if (track.auto) "asr" else "m"}",
+    if (youtube.isNotEmpty()) {
+        val options = mutableListOf(SubtitleOption.Off)
+        youtube.forEach { track ->
+            options += SubtitleOption(
+                key = track.optionKey(),
                 label = track.displayLabel(),
                 language = track.language,
             )
         }
+        return options.distinctBy { it.key }
     }
+    val out = exo.toMutableList()
+    if (out.none { it.isOff }) out.add(0, SubtitleOption.Off)
     return out
 }
 
@@ -175,6 +171,17 @@ internal fun activeSubtitleKey(tracks: Tracks, options: List<SubtitleOption>): S
         }
     }
     return selected?.key ?: SubtitleOption.Off.key
+}
+
+internal fun matchingExoSubtitle(option: SubtitleOption, exo: List<SubtitleOption>): SubtitleOption? {
+    if (option.isOff) return SubtitleOption.Off
+    if (option.group != null) return option
+    val want = option.language?.trim()?.lowercase().orEmpty()
+    if (want.isEmpty()) return null
+    val stem = want.take(2)
+    return exo.firstOrNull { row ->
+        !row.isOff && row.group != null && row.language?.lowercase()?.startsWith(stem) == true
+    }
 }
 
 internal fun applySubtitleChoice(player: Player, option: SubtitleOption) {
@@ -218,10 +225,6 @@ internal fun resolveSubtitleOption(
     }
     if (captionsOn) return preferredSubtitle(options, captionLang) ?: SubtitleOption.Off
     return SubtitleOption.Off
-}
-
-internal fun muteDefaultTextTracks(player: Player) {
-    applySubtitleChoice(player, SubtitleOption.Off)
 }
 
 internal fun preferredSubtitle(options: List<SubtitleOption>, lang: String): SubtitleOption? {

@@ -158,7 +158,7 @@ fun VideoMenuHost(
     fun putInCollection(playlistId: String, collectionId: String) {
         val store = playlists ?: return
         store.addVideo(playlistId, video)
-        collections?.assign(PlaylistEntry.listKey(video), collectionId)
+        collections?.assignVideo(video, collectionId)
         finish("Koleksiyona eklendi")
     }
 
@@ -331,7 +331,7 @@ fun VideoMenuHost(
                                 val playlist = targetPlaylist ?: return@ModalAction
                                 playlists?.addVideo(playlist.id, video)
                                 val id = collections?.create(name, playlist.id)
-                                if (id != null) collections.assign(PlaylistEntry.listKey(video), id)
+                                if (id != null) collections.assignVideo(video, id)
                                 finish("Koleksiyona eklendi")
                             }
                         }

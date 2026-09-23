@@ -71,6 +71,7 @@ fun settingCatalog(): List<SearchHit> = listOf(
     SearchHit("Altyazı", "Ayarlar", SearchTarget.Setting(SettingsCategory.Captions, "category")),
     SearchHit("Altyazı boyutu", "Altyazı", SearchTarget.Setting(SettingsCategory.Captions, "capsize")),
     SearchHit("İndirmeler", "Ayarlar", SearchTarget.Setting(SettingsCategory.Downloads, "category")),
+    SearchHit("Yedekler", "Ayarlar", SearchTarget.Setting(SettingsCategory.Backup, "category")),
     SearchHit("İndirme kalitesi", "İndirmeler", SearchTarget.Setting(SettingsCategory.Downloads, "dlq")),
     SearchHit("Cihazlar", "Ayarlar", SearchTarget.Setting(SettingsCategory.Devices, "category")),
     SearchHit("Hakkında", "Ayarlar", SearchTarget.Setting(SettingsCategory.About, "category")),

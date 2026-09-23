@@ -90,6 +90,10 @@ class FocusLock {
     fun pop() {
         depth = (depth - 1).coerceAtLeast(0)
     }
+
+    fun reset() {
+        depth = 0
+    }
 }
 
 object HoldOk {
@@ -104,6 +108,10 @@ object OverlayRestore {
         if (overlayOpen) return null
         if (remembered != null && remembered in ids) return remembered
         return ids.firstOrNull()
+    }
+
+    fun unlock(lock: FocusLock, overlayOpen: Boolean) {
+        if (!overlayOpen && lock.locked) lock.reset()
     }
 }
 

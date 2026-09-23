@@ -65,6 +65,7 @@ object WatchLogic {
 
     fun isFinished(positionMs: Long, durationMs: Long): Boolean {
         if (durationMs <= 0L || positionMs < MIN_WATCH_MS) return false
+        if (positionMs >= durationMs) return true
         if (positionMs >= (durationMs * WATCHED_RATIO).toLong()) return true
         return durationMs >= 30_000L && durationMs - positionMs <= REMAINING_MS
     }
@@ -97,11 +98,11 @@ object WatchLogic {
 
     fun applyProgress(record: WatchRecord, positionMs: Long, durationMs: Long, now: Long): WatchRecord {
         val pos = positionMs.coerceAtLeast(0L)
-        val incoming = durationMs.takeIf { it > 0L }
+        val incoming = durationMs.takeIf { it > pos }
         val dur = when {
-            incoming != null && record.durationMs > 0L -> minOf(incoming, record.durationMs).coerceAtLeast(pos)
-            incoming != null -> incoming.coerceAtLeast(pos)
-            else -> record.durationMs.coerceAtLeast(pos)
+            incoming != null -> maxOf(incoming, record.durationMs)
+            record.durationMs > 0L -> record.durationMs
+            else -> 0L
         }
         val manual = when {
             pos < MIN_WATCH_MS -> record.manual

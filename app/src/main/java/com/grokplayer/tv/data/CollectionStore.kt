@@ -13,6 +13,7 @@ class CollectionStore(context: Context) {
     private var homes by mutableStateOf(mapOf<String, Set<String>>())
     private var userIds by mutableStateOf(listOf<String>())
     private var known by mutableStateOf(setOf<String>())
+    private var excluded by mutableStateOf(mapOf<String, Set<String>>())
     private var revision by mutableStateOf(0)
 
     init {
@@ -26,15 +27,26 @@ class CollectionStore(context: Context) {
         playlistId: String = "",
     ): List<CollectionGrouper.Bucket<LibraryVideo>> {
         revision
-        val buckets = CollectionGrouper.group(
+        val grouped = CollectionGrouper.group(
             items = videos,
             titleOf = { it.title },
             idOf = { it.id },
             renameOf = { names[it] },
-            homesOf = { id -> homes[id].orEmpty().filter { CollectionGrouper.inScope(it, playlistId) } },
+            homesOf = { id ->
+                val video = videos.firstOrNull { it.id == id }
+                val keys = listOfNotNull(id, video?.let { PlaylistEntry.listKey(it) }).distinct()
+                keys.flatMap { homes[it].orEmpty() }.toSet().filter { CollectionGrouper.inScope(it, playlistId) }
+            },
             scope = playlistId,
             keepIds = known,
         )
+        val buckets = grouped.map { bucket ->
+            bucket.copy(
+                items = bucket.items.filter { video ->
+                    videoKeys(video).none { excluded[it]?.contains(bucket.id) == true }
+                },
+            )
+        }
         val live = buckets.filter { it.items.isNotEmpty() }.toMutableList()
         userIds.filter { CollectionGrouper.inScope(it, playlistId) }.forEach { id ->
             if (live.none { it.id == id }) {
@@ -78,9 +90,30 @@ class CollectionStore(context: Context) {
 
     fun assign(videoId: String, collectionId: String) {
         homes = homes + (videoId to (homes[videoId].orEmpty() + collectionId))
+        val drop = excluded[videoId].orEmpty() - collectionId
+        excluded = if (drop.isEmpty()) excluded - videoId else excluded + (videoId to drop)
         persist()
         revision++
     }
+
+    fun assignVideo(video: LibraryVideo, collectionId: String) {
+        videoKeys(video).forEach { assign(it, collectionId) }
+    }
+
+    fun removeVideo(video: LibraryVideo, collectionId: String, playlistId: String) {
+        videoKeys(video).forEach { key ->
+            if (CollectionGrouper.isGeneralId(collectionId)) {
+                excluded = excluded + (key to (excluded[key].orEmpty() + collectionId))
+            }
+            val next = CollectionGrouper.homesAfterRemove(homes[key].orEmpty(), collectionId, playlistId)
+            homes = if (next.isEmpty()) homes - key else homes + (key to next)
+        }
+        persist()
+        revision++
+    }
+
+    private fun videoKeys(video: LibraryVideo): List<String> =
+        listOf(video.id, PlaylistEntry.listKey(video)).distinct()
 
     fun create(title: String, playlistId: String = ""): String {
         val id = if (playlistId.isBlank()) {
@@ -124,13 +157,14 @@ class CollectionStore(context: Context) {
         applyState(next)
     }
 
-    private fun snapshot() = CollectionReset.State(names, homes, userIds, known)
+    private fun snapshot() = CollectionReset.State(names, homes, userIds, known, excluded)
 
     private fun applyState(state: CollectionReset.State) {
         names = state.names
         homes = state.homes
         userIds = state.userIds
         known = state.known
+        excluded = state.excluded
         persist()
         revision++
     }
@@ -149,6 +183,13 @@ class CollectionStore(context: Context) {
             .putString("homes", homeObj.toString())
             .putString("users", userIds.joinToString("\n"))
             .putString("known", known.joinToString("\n"))
+            .putString("excluded", JSONObject().also { obj ->
+                excluded.forEach { (k, cols) ->
+                    val arr = JSONArray()
+                    cols.forEach { arr.put(it) }
+                    obj.put(k, arr)
+                }
+            }.toString())
             .apply()
     }
 
@@ -176,5 +217,19 @@ class CollectionStore(context: Context) {
         }.getOrDefault(emptyMap())
         userIds = prefs.getString("users", "")?.lines()?.filter { it.isNotBlank() }.orEmpty()
         known = prefs.getString("known", "")?.lines()?.filter { it.isNotBlank() }.orEmpty().toSet()
+        excluded = runCatching {
+            val obj = JSONObject(prefs.getString("excluded", "{}"))
+            buildMap {
+                obj.keys().forEach { key ->
+                    val raw = obj.optJSONArray(key) ?: return@forEach
+                    val cols = buildSet {
+                        for (i in 0 until raw.length()) {
+                            raw.optString(i).takeIf { it.isNotBlank() }?.let { add(it) }
+                        }
+                    }
+                    if (cols.isNotEmpty()) put(key, cols)
+                }
+            }
+        }.getOrDefault(emptyMap())
     }
 }

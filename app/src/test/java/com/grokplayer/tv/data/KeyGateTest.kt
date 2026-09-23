@@ -38,6 +38,10 @@ class KeyGateTest {
         assertFalse(lock.locked)
         lock.pop()
         assertEquals(0, lock.depth)
+        lock.push()
+        lock.reset()
+        assertFalse(lock.locked)
+        assertEquals(0, lock.depth)
     }
 
     @Test

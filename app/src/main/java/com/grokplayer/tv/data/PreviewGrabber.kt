@@ -6,7 +6,9 @@ import android.util.LruCache
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import kotlin.math.abs
+import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 
@@ -24,6 +26,12 @@ object SeekPreviewPlan {
 
     fun firstWave(times: List<Long>, aroundMs: Long, size: Int = FIRST_WAVE): List<Long> =
         prioritize(times, aroundMs).take(size.coerceAtLeast(1))
+
+    fun aroundBucket(timeMs: Long, sizeMs: Long = 5_000L): Long =
+        timeMs.coerceAtLeast(0L) / sizeMs.coerceAtLeast(1L)
+
+    fun workList(times: List<Long>, aroundMs: Long, have: Set<Long>): List<Long> =
+        prioritize(times, aroundMs).filter { it !in have }.take(MAX_PRELOAD)
 
     fun bucket(timeMs: Long): Long = timeMs / BUCKET_MS
 
@@ -67,42 +75,229 @@ object PreviewGrabber {
         timesMs: List<Long>,
         aroundMs: Long,
         onFrame: (Long, ImageBitmap) -> Unit,
+        storyboardSpec: String? = null,
+        durationMs: Long = 0L,
     ) {
         if (timesMs.isEmpty()) return
         timesMs.forEach { time ->
             cached(uri, time)?.let { onFrame(time, it) }
         }
-        if (!SeekPreviewPlan.canExtract(uri, path)) return
-        val missing = SeekPreviewPlan.prioritize(timesMs, aroundMs)
-            .filter { cached(uri, it) == null }
-            .take(SeekPreviewPlan.MAX_PRELOAD)
+        val have = timesMs.filter { cached(uri, it) != null }.toMutableSet()
+        val missing = SeekPreviewPlan.workList(timesMs, aroundMs, have)
         if (missing.isEmpty()) return
         withContext(Dispatchers.IO) {
-            val first = missing.take(SeekPreviewPlan.FIRST_WAVE)
-            val rest = missing.drop(first.size)
-            grab(context, uri, path, first, onFrame)
-            if (rest.isNotEmpty()) {
-                grab(context, uri, path, rest, onFrame)
+            val playing = ThumbnailCache.playbackActive
+            val batch = if (playing) missing.take(SeekPreviewPlan.FIRST_WAVE) else missing
+            val playlist = path?.let { File(it) }?.takeIf { it.isFile && it.extension.equals("m3u8", true) }
+            val onDevice = uri.scheme == "file" || uri.scheme == "content" ||
+                (!path.isNullOrBlank() && File(path).isFile)
+            val steps = previewSteps(
+                playlist = playlist != null,
+                storyboard = !storyboardSpec.isNullOrBlank(),
+                onDevice = onDevice && SeekPreviewPlan.canExtract(uri, path),
+                playing = playing,
+            )
+            var pending = batch
+            for (step in steps) {
+                if (pending.isEmpty()) break
+                when (step) {
+                    PreviewStep.LocalHls -> playlist?.let {
+                        grabHls(context, it, pending, uri, onFrame, paced = playing)
+                    }
+                    PreviewStep.Storyboard -> grabStoryboard(
+                        storyboardSpec.orEmpty(),
+                        pending,
+                        durationMs,
+                        uri,
+                        onFrame,
+                    )
+                    PreviewStep.DeviceFile -> grabOneByOne(
+                        context,
+                        uri,
+                        path,
+                        pending,
+                        onFrame,
+                        paced = playing && onDevice,
+                    )
+                }
+                pending = pending.filter { cached(uri, it) == null }
             }
         }
     }
 
-    private suspend fun grab(
+    private suspend fun grabHls(
         context: Context,
-        uri: Uri,
-        path: String?,
+        playlist: File,
         times: List<Long>,
+        uri: Uri,
         onFrame: (Long, ImageBitmap) -> Unit,
+        paced: Boolean,
     ) {
-        if (times.isEmpty()) return
-        val frames = MediaProbe.framesAt(context, uri, path, times, SeekPreviewPlan.TILE_WIDTH)
-        frames.forEach { (time, bitmap) ->
+        var misses = 0
+        times.forEach { time ->
             yield()
+            if (paced) delay(180)
+            val slice = hlsPreviewSlice(playlist, time) ?: return@forEach
+            val jpeg = previewJpegForTime(playlist, time)
+            var bitmap = readPreviewJpeg(jpeg)
+            if (bitmap == null) {
+                bitmap = MediaProbe.frameInSegment(
+                    context,
+                    slice.file,
+                    slice.offsetMs,
+                    SeekPreviewPlan.TILE_WIDTH,
+                )
+                if (bitmap != null) writePreviewJpeg(jpeg, bitmap)
+            }
+            if (bitmap == null) {
+                misses += 1
+                if (misses >= 2) return
+                return@forEach
+            }
+            misses = 0
             val image = runCatching { bitmap.asImageBitmap() }.getOrNull() ?: return@forEach
             put(uri, time, image)
             withContext(Dispatchers.Main.immediate) { onFrame(time, image) }
         }
     }
+
+    private suspend fun grabOneByOne(
+        context: Context,
+        uri: Uri,
+        path: String?,
+        times: List<Long>,
+        onFrame: (Long, ImageBitmap) -> Unit,
+        paced: Boolean = false,
+    ) {
+        times.forEach { time ->
+            yield()
+            if (paced) delay(80)
+            val bitmap = MediaProbe.frameBitmap(
+                context,
+                uri,
+                path,
+                time,
+                SeekPreviewPlan.TILE_WIDTH,
+                exact = true,
+            )
+                ?: return@forEach
+            val image = runCatching { bitmap.asImageBitmap() }.getOrNull() ?: return@forEach
+            put(uri, time, image)
+            withContext(Dispatchers.Main.immediate) { onFrame(time, image) }
+        }
+    }
+
+    private suspend fun grabStoryboard(
+        spec: String,
+        times: List<Long>,
+        durationMs: Long,
+        uri: Uri,
+        onFrame: (Long, ImageBitmap) -> Unit,
+    ) {
+        val level = StoryboardSpec.fastLevel(StoryboardSpec.parse(spec)) ?: return
+        val sheets = HashMap<String, android.graphics.Bitmap>()
+        times.forEach { time ->
+            yield()
+            val cell = level.cellAt(time, durationMs) ?: return@forEach
+            val sheet = sheets.getOrPut(cell.url) {
+                val bytes = runCatching { StreamHttp.readBytes(cell.url) }.getOrNull()
+                    ?: return@forEach
+                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    ?: return@forEach
+            }
+            val x = (cell.column * cell.width).coerceAtLeast(0)
+            val y = (cell.row * cell.height).coerceAtLeast(0)
+            if (x + cell.width > sheet.width || y + cell.height > sheet.height) return@forEach
+            val cropped = runCatching {
+                android.graphics.Bitmap.createBitmap(sheet, x, y, cell.width, cell.height)
+            }.getOrNull() ?: return@forEach
+            val image = runCatching { cropped.asImageBitmap() }.getOrNull() ?: return@forEach
+            put(uri, time, image)
+            withContext(Dispatchers.Main.immediate) { onFrame(time, image) }
+        }
+    }
+}
+
+internal enum class PreviewStep { LocalHls, Storyboard, DeviceFile }
+
+internal fun previewSteps(
+    playlist: Boolean,
+    storyboard: Boolean,
+    onDevice: Boolean,
+    playing: Boolean,
+): List<PreviewStep> {
+    val steps = ArrayList<PreviewStep>(3)
+    if (playlist) steps += PreviewStep.LocalHls
+    if (storyboard) steps += PreviewStep.Storyboard
+    if (!playlist && (onDevice || !playing)) steps += PreviewStep.DeviceFile
+    return steps
+}
+
+internal fun exactPreviewFrame(frames: Map<Long, Int>, time: Long): Int? = frames[time]
+
+internal fun previewJpegForTime(playlist: File, timeMs: Long): File {
+    val root = playlist.parentFile ?: playlist
+    return File(root, "previews/t-$timeMs.jpg")
+}
+
+internal fun posterUsesNetwork(localPath: String?): Boolean {
+    if (localPath.isNullOrBlank()) return true
+    return !File(localPath).isFile
+}
+
+internal fun readPreviewJpeg(file: File): android.graphics.Bitmap? {
+    if (!file.isFile || file.length() < 32L) return null
+    return android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+}
+
+internal fun writePreviewJpeg(file: File, bitmap: android.graphics.Bitmap) {
+    file.parentFile?.mkdirs()
+    runCatching {
+        file.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, it) }
+    }
+}
+
+internal data class HlsPreviewSlice(val file: File, val offsetMs: Long)
+
+internal fun hlsPreviewSlice(playlist: File, timeMs: Long): HlsPreviewSlice? {
+    if (!playlist.isFile) return null
+    val text = runCatching { playlist.readText() }.getOrNull() ?: return null
+    val media = hlsMediaPlaylist(playlist, text) ?: return null
+    val body = if (media == playlist) text else runCatching { media.readText() }.getOrNull() ?: return null
+    var cursor = 0L
+    var pendingMs = -1L
+    var last: HlsPreviewSlice? = null
+    for (raw in body.replace("\r\n", "\n").lines()) {
+        val line = raw.trim()
+        if (line.startsWith("#EXTINF:", ignoreCase = true)) {
+            val seconds = line.substringAfter(':').substringBefore(',').toDoubleOrNull() ?: -1.0
+            pendingMs = if (seconds > 0.0) (seconds * 1000.0).toLong() else -1L
+            continue
+        }
+        if (pendingMs < 0L || line.isEmpty() || line.startsWith("#")) continue
+        val start = cursor
+        cursor += pendingMs
+        val segment = File(media.parentFile, line.substringAfterLast('/').substringBefore('?'))
+        if (segment.isFile) {
+            val slice = HlsPreviewSlice(segment, (timeMs - start).coerceAtLeast(0L))
+            if (timeMs < cursor) return slice
+            last = slice
+        }
+        pendingMs = -1L
+    }
+    return last
+}
+
+private fun hlsMediaPlaylist(playlist: File, text: String): File? {
+    if (text.contains("#EXTINF:", ignoreCase = true)) return playlist
+    val folder = playlist.parentFile ?: return null
+    val video = File(folder, "v.m3u8")
+    if (video.isFile) return video
+    val child = text.replace("\r\n", "\n").lines().map { it.trim() }
+        .firstOrNull { it.isNotEmpty() && !it.startsWith("#") }
+        ?: return null
+    val next = File(folder, child.substringAfterLast('/').substringBefore('?'))
+    return next.takeIf { it.isFile }
 }
 
 fun seekCursor(previewVisible: Boolean, previewPos: Long, position: Long): Long =

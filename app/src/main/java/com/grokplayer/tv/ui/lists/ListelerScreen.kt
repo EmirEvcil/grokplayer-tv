@@ -70,6 +70,7 @@ import com.grokplayer.tv.data.DownloadStore
 import com.grokplayer.tv.data.FocusAnchor
 import com.grokplayer.tv.data.FolderPlaylist
 import com.grokplayer.tv.data.OfflineCollections
+import com.grokplayer.tv.data.OverlayRestore
 import com.grokplayer.tv.data.LibraryVideo
 import com.grokplayer.tv.data.PlaylistCollectionSummary
 import com.grokplayer.tv.data.PlaylistCollections
@@ -370,6 +371,10 @@ fun ListelerScreen(
         return true
     }
 
+    val focusLock = com.grokplayer.tv.ui.theme.LocalFocusLock.current
+    LaunchedEffect(modalOpen) {
+        com.grokplayer.tv.data.OverlayRestore.unlock(focusLock, modalOpen)
+    }
     InterceptBack { goBack() }
     BackHandler(enabled = modalOpen || detailOpen || collectionBrowseOpen) { goBack() }
 
@@ -394,21 +399,31 @@ fun ListelerScreen(
         }
         if (key == null) {
             restoreLock = false
+            OverlayRestore.unlock(focusLock, false)
+            runCatching { firstFocus.requestFocus() }
+            runCatching { railFocus.requestFocus() }
             return@LaunchedEffect
         }
         val target = requesters[key]
         if (target == null) {
             restoreLock = false
+            OverlayRestore.unlock(focusLock, false)
+            runCatching { firstFocus.requestFocus() }
+            runCatching { railFocus.requestFocus() }
             return@LaunchedEffect
         }
-        repeat(3) {
+        repeat(8) {
             if (runCatching { target.requestFocus() }.getOrDefault(false)) {
                 restoreLock = false
                 return@LaunchedEffect
             }
-            delay(32)
+            delay(40)
         }
         restoreLock = false
+        OverlayRestore.unlock(focusLock, false)
+        if (!runCatching { firstFocus.requestFocus() }.getOrDefault(false)) {
+            runCatching { railFocus.requestFocus() }
+        }
     }
 
     val body = when {
@@ -457,7 +472,7 @@ fun ListelerScreen(
                         .focusRequester(firstFocus)
                         .focusRequester(playlistsFocus)
                         .focusProperties {
-                            canFocus = !restoreLock && !modalOpen && !playerOpen
+                            canFocus = !modalOpen && !playerOpen
                             left = railFocus
                             right = collectionsFocus
                             down = firstBodyFocus
@@ -474,7 +489,7 @@ fun ListelerScreen(
                     Modifier
                         .focusRequester(collectionsFocus)
                         .focusProperties {
-                            canFocus = !restoreLock && !modalOpen && !playerOpen
+                            canFocus = !modalOpen && !playerOpen
                             left = playlistsFocus
                             down = firstBodyFocus
                         },
@@ -823,6 +838,20 @@ fun ListelerScreen(
                     }
                 },
                 trailingActions = buildList {
+                    if (openCollection != null) {
+                        add(
+                            ModalAction("Koleksiyondan çıkar", icon = Icons.Outlined.Delete) {
+                                val scopeId = if (offlineBrowse) {
+                                    com.grokplayer.tv.data.OfflineCollections.SCOPE
+                                } else {
+                                    openCollectionsPlaylist?.id.orEmpty()
+                                }
+                                collections.removeVideo(video, openCollection!!.id, scopeId)
+                                videoMenu = null
+                                syncOpenCollection()
+                            },
+                        )
+                    }
                     if (openPlaylist?.custom == true) {
                         add(
                             ModalAction("Listeden çıkar", icon = Icons.Outlined.Delete) {

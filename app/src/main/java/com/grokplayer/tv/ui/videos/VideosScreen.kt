@@ -1,7 +1,11 @@
 package com.grokplayer.tv.ui.videos
 
+import android.app.Activity
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -29,6 +33,7 @@ import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.CreateNewFolder
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Replay
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -89,6 +94,7 @@ fun VideosScreen(
     playlists: com.grokplayer.tv.data.PlaylistStore? = null,
     collections: com.grokplayer.tv.data.CollectionStore? = null,
     onNotice: (String) -> Unit = {},
+    onPurgeDownload: (LibraryVideo) -> Unit = {},
     focusVideoId: String? = null,
     onFocusConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -101,6 +107,17 @@ fun VideosScreen(
     var folderOpen by remember { mutableStateOf(false) }
     var optionsFor by remember { mutableStateOf<LibraryVideo?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
+    var pendingDelete by remember { mutableStateOf<LibraryVideo?>(null) }
+    val deleteLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult(),
+    ) { result ->
+        val target = pendingDelete
+        pendingDelete = null
+        if (target == null) return@rememberLauncherForActivityResult
+        val gone = result.resultCode == Activity.RESULT_OK && library.finishLocalDelete(target)
+        scope.launch { library.refresh() }
+        onNotice(if (gone) "Video silindi" else "Dosya silinemedi")
+    }
     var pendingGridFocus by remember { mutableStateOf(false) }
     var restoreAfterModal by remember { mutableStateOf(false) }
     var restoreVideoId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -178,10 +195,17 @@ fun VideosScreen(
         runCatching { gridState.scrollToItem(savedScrollIndex, savedScrollOffset) }
     }
 
+    val focusLock = com.grokplayer.tv.ui.theme.LocalFocusLock.current
+    LaunchedEffect(overlayOpen()) {
+        com.grokplayer.tv.data.OverlayRestore.unlock(focusLock, overlayOpen())
+    }
     LaunchedEffect(restoreAfterModal, restoreVideoId, overlayOpen()) {
         if (!restoreAfterModal || overlayOpen()) return@LaunchedEffect
+        com.grokplayer.tv.data.OverlayRestore.unlock(focusLock, false)
         if (videos.isEmpty()) {
-            runCatching { addFolderFocus.requestFocus() }
+            if (!runCatching { addFolderFocus.requestFocus() }.getOrDefault(false)) {
+                runCatching { railFocus.requestFocus() }
+            }
             restoreAfterModal = false
             return@LaunchedEffect
         }
@@ -194,13 +218,16 @@ fun VideosScreen(
         )
         val index = videos.indexOfFirst { it.id == id }.let { if (it < 0) lastFocusedIndex else it }
         val requester = tileById[videos.getOrNull(index)?.id] ?: firstVideoFocus
-        repeat(2) {
+        repeat(8) {
             if (runCatching { requester.requestFocus() }.getOrDefault(false)) {
                 lastFocusedIndex = index.coerceIn(0, videos.lastIndex)
                 restoreAfterModal = false
                 return@LaunchedEffect
             }
             delay(40)
+        }
+        if (!runCatching { firstVideoFocus.requestFocus() }.getOrDefault(false)) {
+            runCatching { railFocus.requestFocus() }
         }
         restoreAfterModal = false
     }
@@ -510,6 +537,25 @@ fun VideosScreen(
                             },
                         )
                     }
+                    add(
+                        com.grokplayer.tv.ui.components.ModalAction("Sil", icon = Icons.Outlined.Delete) {
+                            onPurgeDownload(video)
+                            val result = library.deleteLocal(video)
+                            optionsFor = null
+                            restoreAfterModal = true
+                            if (result.pending != null && !result.gone) {
+                                pendingDelete = video
+                                runCatching {
+                                    deleteLauncher.launch(IntentSenderRequest.Builder(result.pending).build())
+                                }.onFailure {
+                                    onNotice("Dosya silinemedi")
+                                }
+                            } else {
+                                scope.launch { library.refresh() }
+                                onNotice(if (result.gone) "Video silindi" else "Dosya silinemedi")
+                            }
+                        },
+                    )
                 },
             )
         }

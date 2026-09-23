@@ -3,13 +3,9 @@ package com.grokplayer.tv.ui.player
 import android.graphics.Bitmap
 import android.graphics.Typeface
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import android.util.TypedValue
 import android.view.LayoutInflater
-import android.view.PixelCopy
-import android.view.SurfaceView
 import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
@@ -86,9 +82,13 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -151,9 +151,8 @@ import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.coroutines.resume
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -184,6 +183,7 @@ fun PlayerScreen(
     var ytAudios by remember { mutableStateOf<List<YtAudioTrack>>(emptyList()) }
     var lastPrepared by remember { mutableStateOf<PreparedPlay?>(null) }
     var activeDubId by remember { mutableStateOf<String?>(null) }
+    var audioPicked by remember { mutableStateOf(false) }
     var ytLines by remember { mutableStateOf<List<YtCaptionLine>>(emptyList()) }
     var captionPos by remember { mutableLongStateOf(0L) }
     var controls by remember { mutableStateOf(true) }
@@ -239,7 +239,6 @@ fun PlayerScreen(
                 params.setPreferredAudioLanguage(settings.audioLang)
             }
             val cap = when {
-                isEmulatorDevice() -> 540
                 settings.maxHeight > 0 -> settings.maxHeight
                 else -> 0
             }
@@ -271,10 +270,12 @@ fun PlayerScreen(
             captionsOn = settings.captionsOn,
             captionLang = settings.captionLang,
         )
-        val currentKey = activeSubtitleKey(target.currentTracks, options)
+        val exo = listSubtitleOptions(target.currentTracks)
+        val applied = matchingExoSubtitle(desired, exo) ?: desired
+        val currentKey = activeSubtitleKey(target.currentTracks, exo)
         val needsOff = desired.isOff && target.currentTracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSelected }
-        if (needsOff || (!desired.isOff && currentKey != desired.key)) {
-            applySubtitleChoice(target, desired)
+        if (needsOff || (!desired.isOff && currentKey != applied.key)) {
+            applySubtitleChoice(target, applied)
         }
         selectedSubtitleKey = desired.key
     }
@@ -359,6 +360,8 @@ fun PlayerScreen(
                 audioCursor = audios.indexOfFirst { it.key == selectedAudioKey }.coerceAtLeast(0)
                 if (activeDubId != null) {
                     preferSidecarAudio(player, ytAudios.firstOrNull { it.id == activeDubId }?.language)
+                } else if (!audioPicked && settings.audioLang.isNotBlank()) {
+                    if (selectAudioLanguage(player, settings.audioLang)) return
                 }
                 if (player.playbackState == Player.STATE_READY) {
                     applyPendingSubtitles(player)
@@ -393,8 +396,28 @@ fun PlayerScreen(
         }
     }
 
+    LaunchedEffect(video.id) {
+        if (!video.isVod()) return@LaunchedEffect
+        var saved = 0L
+        while (true) {
+            delay(5_000)
+            val (pos, dur) = playClock(player, video.durationMs)
+            if (pos >= 1_000L && pos > saved) {
+                library.markPlayed(video, pos, dur)
+                saved = pos
+            }
+        }
+    }
+
     LaunchedEffect(index) {
         pendingSeek = null
+        ytCaptions = emptyList()
+        ytAudios = emptyList()
+        ytLines = emptyList()
+        audioPicked = false
+        subtitleOptions = listOf(SubtitleOption.Off)
+        selectedSubtitleKey = SubtitleOption.Off.key
+        selectedSubtitleLang = null
         val item = session.queue[index]
         live = item.isLive
         atLiveEdge = !item.isLive
@@ -406,7 +429,7 @@ fun PlayerScreen(
         val remote = item.uri.scheme == "http" || item.uri.scheme == "https"
         val prepared = withContext(Dispatchers.IO) { preparePlay(context, item) }
         StreamHttp.applyPlayHeaders(httpFactory, prepared.referer, prepared.userAgent)
-        ytCaptions = prepared.captions
+        ytCaptions = prepared.captions.filter { !it.translate }
         ytAudios = prepared.audios
         lastPrepared = prepared
         activeDubId = null
@@ -459,6 +482,21 @@ fun PlayerScreen(
             }
         }
         Log.i("GrokPlayer", "open ${item.format} prepare ${android.os.SystemClock.elapsedRealtime() - openedAt}ms")
+        val captionItemId = item.id
+        val captionPrepared = prepared
+        launch {
+            val loaded = withContext(Dispatchers.IO) {
+                YouTubeCaptions.usableTracks(
+                    context,
+                    captionPrepared.captions.filter { !it.translate },
+                    captionPrepared.referer,
+                    captionPrepared.userAgent,
+                    settings.captionLang,
+                )
+            }
+            if (session.queue.getOrNull(index)?.id != captionItemId) return@launch
+            if (loaded.isNotEmpty()) ytCaptions = loaded
+        }
         controls = true
         previewVisible = false
         previewFrames = SeekPreviewPlan.times(item.durationMs.coerceAtLeast(total), seekStepMs)
@@ -475,6 +513,18 @@ fun PlayerScreen(
                     val key = item.path ?: item.uri.toString()
                     ThumbnailCache.save(context, key, frame, maxWidth = ThumbnailCache.HERO_WIDTH)
                 }
+            }
+        }
+        val ytId = com.grokplayer.tv.data.scan.YouTubeResolver.videoId(item.originUrl ?: "")
+            ?: com.grokplayer.tv.data.scan.YouTubeResolver.videoId(item.uri.toString())
+        if (ytId != null && prepared.storyboardSpec.isNullOrBlank()) {
+            launch {
+                val spec = withContext(Dispatchers.IO) {
+                    com.grokplayer.tv.data.scan.YouTubeResolver.storyboardSpec(context, ytId)
+                }
+                if (spec.isNullOrBlank()) return@launch
+                if (session.queue.getOrNull(index)?.id != item.id) return@launch
+                lastPrepared = lastPrepared?.copy(storyboardSpec = spec)
             }
         }
     }
@@ -539,6 +589,7 @@ fun PlayerScreen(
                 if (pendingSeek == null) {
                     position = player.currentPosition
                     if (!previewVisible) previewPos = position
+                    if (ytLines.isNotEmpty()) captionPos = position
                 }
                 duration = windowDuration.takeIf { it > 0 && it != C.TIME_UNSET } ?: item.durationMs
                 val remain = duration - position
@@ -554,35 +605,45 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(selectedSubtitleKey, ytCaptions, index) {
+    LaunchedEffect(selectedSubtitleKey, index) {
         val option = subtitleOptions.firstOrNull { it.key == selectedSubtitleKey }
-        val track = if (option == null || option.isOff) {
-            null
-        } else {
-            YouTubeCaptions.match(ytCaptions, option.language, option.label)
-                ?: ytCaptions.firstOrNull { option.key.startsWith("yt:${it.language}") }
-        }
-        if (track == null) {
+        if (option == null || option.isOff) {
             ytLines = emptyList()
+            return@LaunchedEffect
+        }
+        val track = YouTubeCaptions.match(ytCaptions, option.language, option.label)
+            ?: ytCaptions.firstOrNull { it.optionKey() == option.key }
+        if (track == null) {
+            if (option.group == null) {
+                ytLines = emptyList()
+                toast = "Altyazı yüklenemedi"
+            }
             return@LaunchedEffect
         }
         val lines = track.lines.ifEmpty {
             withContext(Dispatchers.IO) {
-                YouTubeCaptions.fetchLines(context, track, video.referer ?: "https://www.youtube.com/", video.userAgent)
+                YouTubeCaptions.fetchLines(
+                    context,
+                    track,
+                    lastPrepared?.referer ?: video.referer ?: "https://www.youtube.com/",
+                    lastPrepared?.userAgent ?: video.userAgent,
+                )
             }
         }
-        ytLines = lines
-        Log.i("GrokPlayer", "caption overlay lang=${track.language} lines=${lines.size}")
-        if (lines.isEmpty()) {
-            toast = "Altyazı yüklenemedi"
-        }
-    }
-
-    LaunchedEffect(ytLines) {
-        if (ytLines.isEmpty()) return@LaunchedEffect
-        while (true) {
+        ytLines = YouTubeCaptions.readableLines(lines)
+        if (lines.isNotEmpty()) {
+            ytCaptions = ytCaptions.map { current ->
+                if (current.language == track.language && current.auto == track.auto && current.translate == track.translate) {
+                    current.copy(lines = lines)
+                } else {
+                    current
+                }
+            }
             captionPos = player.currentPosition
-            delay(50)
+        }
+        Log.i("GrokPlayer", "caption overlay lang=${track.language} lines=${lines.size}")
+        if (lines.isEmpty() && option.group == null) {
+            toast = "Altyazı yüklenemedi"
         }
     }
 
@@ -618,20 +679,12 @@ fun PlayerScreen(
             pendingSeek = null
             return@LaunchedEffect
         }
-        var waited = 0
-        while (waited < 900 && player.playbackState != androidx.media3.common.Player.STATE_READY) {
-            delay(40)
-            waited += 40
-        }
-        delay(80)
-        capturePlayerFrame(playerView)?.let { frame ->
-            PreviewGrabber.put(video.uri, target, frame)
-            previewFrames = previewFrames + (target to frame)
-        }
         pendingSeek = null
     }
 
-    LaunchedEffect(video.id, duration, seekStepMs) {
+    val aroundMs = seekCursor(previewVisible, previewPos, position)
+    val aroundBucket = SeekPreviewPlan.aroundBucket(aroundMs)
+    LaunchedEffect(video.id, duration, seekStepMs, aroundBucket, lastPrepared?.storyboardSpec) {
         if (video.isLive || duration <= 0L) return@LaunchedEffect
         val times = SeekPreviewPlan.times(duration, seekStepMs)
         times.forEach { time ->
@@ -639,16 +692,18 @@ fun PlayerScreen(
                 previewFrames = previewFrames + (time to it)
             }
         }
-        val around = seekCursor(previewVisible, previewPos, position)
         PreviewGrabber.preload(
             context = context,
             uri = video.uri,
             path = video.path,
             timesMs = times,
-            aroundMs = around,
-        ) { time, frame ->
-            previewFrames = previewFrames + (time to frame)
-        }
+            aroundMs = aroundMs,
+            storyboardSpec = lastPrepared?.storyboardSpec,
+            durationMs = duration,
+            onFrame = { time, frame ->
+                previewFrames = previewFrames + (time to frame)
+            },
+        )
     }
 
     LaunchedEffect(previewPos, video.uri, previewVisible, duration, seekStepMs) {
@@ -738,7 +793,8 @@ fun PlayerScreen(
         subtitlePicked = true
         selectedSubtitleKey = option.key
         selectedSubtitleLang = option.language
-        applySubtitleChoice(player, option)
+        val exo = matchingExoSubtitle(option, listSubtitleOptions(player.currentTracks))
+        applySubtitleChoice(player, exo ?: option)
         subtitleOpen = false
         toast = if (option.isOff) "Altyazı kapalı" else option.label
         showControls()
@@ -797,6 +853,7 @@ fun PlayerScreen(
     }
 
     fun pickAudio(option: AudioOption) {
+        audioPicked = true
         selectedAudioKey = option.key
         audioOpen = false
         if (muted) {
@@ -1070,7 +1127,7 @@ fun PlayerScreen(
                 title = "Altyazı",
                 onDismiss = { subtitleOpen = false },
                 startIndex = subtitleCursor,
-                width = 300.dp,
+                width = 420.dp,
                 absorbOpeningOk = false,
                 actions = subtitleOptions.map { option ->
                     ModalAction(option.label, icon = Icons.Outlined.ClosedCaption) { pickSubtitle(option) }
@@ -1438,7 +1495,7 @@ private fun BottomControls(
 }
 
 @Composable
-private fun SeekStrip(
+fun SeekStrip(
     times: List<Long>,
     current: Long,
     frames: Map<Long, ImageBitmap>,
@@ -1464,6 +1521,7 @@ private fun SeekStrip(
             ) {
                 Box(
                     Modifier
+                        .testTag("preview-$time")
                         .width(width)
                         .height(height)
                         .border(
@@ -1475,11 +1533,14 @@ private fun SeekStrip(
                         .background(Color.Black),
                     contentAlignment = Alignment.Center,
                 ) {
-                    val frame = frames[time] ?: frames.minByOrNull { kotlin.math.abs(it.key - time) }
-                        ?.takeIf { kotlin.math.abs(it.key - time) <= 1_500L }
-                        ?.value
+                    val frame = frames[time]
                     if (frame != null) {
-                        Image(frame, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                        Image(
+                            frame,
+                            null,
+                            Modifier.fillMaxSize().testTag("preview-image-$time"),
+                            contentScale = ContentScale.Crop,
+                        )
                     }
                 }
                 Text(
@@ -1513,35 +1574,6 @@ private fun capturePlayerBitmap(view: PlayerView?): Bitmap? {
     return null
 }
 
-private suspend fun capturePlayerFrame(view: PlayerView?): ImageBitmap? {
-    if (view == null || view.width < 8 || view.height < 8) return null
-    val texture = view.videoSurfaceView as? TextureView
-    if (texture != null) {
-        return runCatching { texture.bitmap?.asImageBitmap() }.getOrNull()
-    }
-    val surfaceView = view.videoSurfaceView as? SurfaceView ?: return null
-    val bmp = Bitmap.createBitmap(
-        (view.width / 3).coerceAtLeast(160),
-        (view.height / 3).coerceAtLeast(90),
-        Bitmap.Config.ARGB_8888,
-    )
-    return try {
-        suspendCancellableCoroutine { cont ->
-            PixelCopy.request(surfaceView, bmp, { result ->
-                if (result == PixelCopy.SUCCESS) {
-                    cont.resume(bmp.asImageBitmap())
-                } else {
-                    if (!bmp.isRecycled) bmp.recycle()
-                    cont.resume(null)
-                }
-            }, Handler(Looper.getMainLooper()))
-        }
-    } catch (_: Exception) {
-        if (!bmp.isRecycled) bmp.recycle()
-        null
-    }
-}
-
 private fun selectedAudioFormat(tracks: Tracks): androidx.media3.common.Format? {
     tracks.groups.forEach { group ->
         if (group.type != C.TRACK_TYPE_AUDIO) return@forEach
@@ -1559,7 +1591,43 @@ private data class PreparedPlay(
     val captions: List<YtCaptionTrack> = emptyList(),
     val audios: List<YtAudioTrack> = emptyList(),
     val audioSidecar: java.io.File? = null,
+    val storyboardSpec: String? = null,
 )
+
+private fun youtubeMeta(
+    context: android.content.Context,
+    video: com.grokplayer.tv.data.LibraryVideo,
+    raw: String,
+): com.grokplayer.tv.data.scan.ScanHit? {
+    val id = YouTubeResolver.videoId(raw)
+        ?: video.originUrl?.let { YouTubeResolver.videoId(it) }
+        ?: return null
+    val page = video.originUrl?.takeIf { YouTubeResolver.videoId(it) != null }
+        ?: raw.takeIf { YouTubeResolver.videoId(it) != null }
+        ?: "https://www.youtube.com/watch?v=$id"
+    return YouTubeResolver.resolve(context, id, page)
+}
+
+private fun attachYoutubeSubs(
+    context: android.content.Context,
+    builder: MediaItem.Builder,
+    video: com.grokplayer.tv.data.LibraryVideo,
+    youtube: com.grokplayer.tv.data.scan.ScanHit?,
+) {
+    val sidecars = sidecarSubtitleConfigs(video)
+    val youtubeSubs = youtube?.captions.orEmpty().mapNotNull { track ->
+        val file = YouTubeCaptions.writeVtt(context, track, video.id) ?: return@mapNotNull null
+        MediaItem.SubtitleConfiguration.Builder(android.net.Uri.fromFile(file))
+            .setMimeType(MimeTypes.TEXT_VTT)
+            .setLanguage(track.language)
+            .setLabel(track.displayLabel())
+            .setId("yt:${track.language}:${if (track.auto) "asr" else "manual"}")
+            .setSelectionFlags(0)
+            .build()
+    }
+    val subs = sidecars + youtubeSubs
+    if (subs.isNotEmpty()) builder.setSubtitleConfigurations(subs)
+}
 
 private fun preparePlay(context: android.content.Context, video: com.grokplayer.tv.data.LibraryVideo): PreparedPlay {
     val raw = video.uri.toString()
@@ -1575,8 +1643,7 @@ private fun preparePlay(context: android.content.Context, video: com.grokplayer.
             "m3u8" -> builder.setMimeType(MimeTypes.APPLICATION_M3U8)
             "mpd" -> builder.setMimeType(MimeTypes.APPLICATION_MPD)
         }
-        val sidecars = sidecarSubtitleConfigs(video)
-        if (sidecars.isNotEmpty()) builder.setSubtitleConfigurations(sidecars)
+        attachYoutubeSubs(context, builder, video, null)
         return PreparedPlay(
             mediaItem = builder.build(),
             referer = video.referer,
@@ -1588,14 +1655,7 @@ private fun preparePlay(context: android.content.Context, video: com.grokplayer.
         ?: raw.takeIf { it.startsWith("http") }
         ?: raw
     val lanFile = source.contains("/v1/file")
-    val youtubeId = YouTubeResolver.videoId(source)
-        ?: video.originUrl?.let { YouTubeResolver.videoId(it) }
-    val youtube = if (!lanFile && youtubeId != null) {
-        val page = video.originUrl?.takeIf { YouTubeResolver.videoId(it) != null } ?: source
-        YouTubeResolver.resolve(context, youtubeId, page)
-    } else {
-        null
-    }
+    val youtube = if (!lanFile) youtubeMeta(context, video, source) else null
     val resolved = when {
         lanFile -> source
         youtube != null -> youtube.playUrl
@@ -1617,28 +1677,30 @@ private fun preparePlay(context: android.content.Context, video: com.grokplayer.
             builder.setMimeType("video/x-msvideo")
         }
     }
-    val sidecars = sidecarSubtitleConfigs(video)
-    val youtubeSubs = youtube?.captions.orEmpty().mapNotNull { track ->
-        val file = YouTubeCaptions.writeVtt(context, track) ?: return@mapNotNull null
-        MediaItem.SubtitleConfiguration.Builder(android.net.Uri.fromFile(file))
-            .setMimeType(MimeTypes.TEXT_VTT)
-            .setLanguage(track.language)
-            .setLabel(track.displayLabel())
-            .setId("yt:${track.language}:${if (track.auto) "asr" else "manual"}")
-            .setSelectionFlags(0)
-            .build()
-    }
-    val subs = sidecars + youtubeSubs
-    if (subs.isNotEmpty()) {
-        builder.setSubtitleConfigurations(subs)
-    }
+    attachYoutubeSubs(context, builder, video, youtube)
     return PreparedPlay(
         mediaItem = builder.build(),
         referer = youtube?.referer ?: video.referer,
         userAgent = youtube?.userAgent ?: video.userAgent,
         captions = youtube?.captions.orEmpty(),
         audios = youtube?.audios.orEmpty(),
+        storyboardSpec = youtube?.storyboardSpec,
     )
+}
+
+private fun selectAudioLanguage(player: ExoPlayer, language: String): Boolean {
+    val want = language.trim()
+    if (want.isEmpty()) return false
+    val groups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO && it.length > 0 }
+    val match = groups.firstOrNull { group ->
+        group.getTrackFormat(0).language.orEmpty().startsWith(want.take(2), ignoreCase = true)
+    } ?: return false
+    if (match.isTrackSelected(0)) return false
+    player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+        .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+        .setOverrideForType(TrackSelectionOverride(match.mediaTrackGroup, listOf(0)))
+        .build()
+    return true
 }
 
 private fun preferSidecarAudio(player: ExoPlayer, language: String?) {
@@ -1693,6 +1755,7 @@ private object PreferStableDecoder : MediaCodecSelector {
             requiresSecureDecoder,
             requiresTunnelingDecoder,
         )
+        if (isEmulatorDevice()) return infos
         val stable = infos.filterNot { info ->
             val name = info.name.lowercase()
             name.contains("goldfish") || name.contains("ranchu")
@@ -2017,30 +2080,33 @@ private fun YtCaptionOverlay(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         visible.forEach { line ->
-            val spoken = line.words.filter { positionMs + 40L >= it.startMs }
-            if (spoken.isEmpty()) return@forEach
-            val currentStart = spoken.last().startMs
-            Row(
-                Modifier
+            if (line.words.isEmpty()) return@forEach
+            val currentStart = line.words.lastOrNull { positionMs + 80L >= it.startMs }?.startMs
+            val text = buildAnnotatedString {
+                line.words.forEachIndexed { index, word ->
+                    val current = currentStart != null && word.startMs == currentStart
+                    withStyle(
+                        SpanStyle(
+                            color = if (current) GrokYellow else GrokWhite,
+                            fontWeight = if (current) FontWeight.Bold else FontWeight.SemiBold,
+                        ),
+                    ) {
+                        append(word.text)
+                        if (index != line.words.lastIndex) append(" ")
+                    }
+                }
+            }
+            Text(
+                text = text,
+                style = TextStyle(
+                    fontSize = fontSp.sp,
+                    shadow = Shadow(color = Color.Black, offset = Offset(0f, 2f), blurRadius = 6f),
+                ),
+                modifier = Modifier
                     .padding(vertical = 3.dp)
                     .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(6.dp))
                     .padding(horizontal = 14.dp, vertical = 5.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                spoken.forEachIndexed { index, word ->
-                    val current = word.startMs == currentStart
-                    Text(
-                        text = word.text + if (index == spoken.lastIndex) "" else " ",
-                        style = TextStyle(
-                            fontSize = fontSp.sp,
-                            fontWeight = if (current) FontWeight.Bold else FontWeight.SemiBold,
-                            color = if (current) GrokYellow else GrokWhite,
-                            shadow = Shadow(color = Color.Black, offset = Offset(0f, 2f), blurRadius = 6f),
-                        ),
-                    )
-                }
-            }
+            )
         }
     }
 }

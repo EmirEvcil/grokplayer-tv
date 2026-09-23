@@ -11,6 +11,17 @@ import org.junit.Test
 
 class DownloadFlowTest {
     @Test
+    fun cancelledDownloadDoesNotHoldTheNextTurn() {
+        val queued = listOf(
+            "old" to DownloadStatus.Queued,
+            "next" to DownloadStatus.Queued,
+        )
+        assertEquals("next", DownloadTurn.nextQueued(queued, setOf("old"), busy = false))
+        assertEquals(null, DownloadTurn.nextQueued(queued, setOf("old"), busy = true))
+        assertEquals("old", DownloadTurn.nextQueued(queued, emptySet(), busy = false))
+    }
+
+    @Test
     fun singleVideoThenDuplicateIsSkipped() {
         val url = "http://pc/v1/file?path=folder1/clip.mp4"
         val done = snap("1", "clip", DownloadStatus.Done, "/tmp/s01e01.mp4", url)

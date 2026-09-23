@@ -26,6 +26,7 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.ClosedCaption
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.SettingsInputHdmi
 import androidx.compose.material.icons.outlined.Tv
@@ -65,6 +66,7 @@ import com.grokplayer.tv.data.link.PairedPc
 import com.grokplayer.tv.ui.components.HintBar
 import com.grokplayer.tv.ui.devices.DevicesSection
 import com.grokplayer.tv.ui.theme.GrokMuted
+import com.grokplayer.tv.ui.theme.InterceptBack
 import com.grokplayer.tv.ui.theme.GrokPink
 import com.grokplayer.tv.ui.theme.GrokSoft
 import com.grokplayer.tv.ui.theme.GrokSurface
@@ -78,6 +80,7 @@ enum class SettingsCategory(val labelRes: Int, val icon: ImageVector) {
     Audio(R.string.cat_audio, Icons.AutoMirrored.Outlined.VolumeUp),
     Captions(R.string.cat_captions, Icons.Outlined.ClosedCaption),
     Downloads(R.string.cat_downloads, Icons.Outlined.Download),
+    Backup(R.string.cat_backup, Icons.Outlined.Save),
     Devices(R.string.cat_devices, Icons.Outlined.SettingsInputHdmi),
     About(R.string.cat_about, Icons.Outlined.Info),
 }
@@ -145,6 +148,11 @@ fun SettingsScreen(
         zone = SettingsZone.Categories
         runCatching { categoryRequester(category).requestFocus() }
     }
+    InterceptBack(enabled = zone == SettingsZone.Details) {
+        zone = SettingsZone.Categories
+        runCatching { categoryRequester(category).requestFocus() }
+        true
+    }
 
     Column(
         modifier
@@ -191,7 +199,6 @@ fun SettingsScreen(
                                 val ok = event.key == Key.DirectionCenter || event.key == Key.Enter
                                 if (ok) return@onPreviewKeyEvent true
                                 if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight) {
-                                    zone = SettingsZone.Details
                                     runCatching { firstDetailFocus.requestFocus() }
                                     true
                                 } else {
@@ -200,6 +207,10 @@ fun SettingsScreen(
                             }
                             .onFocusChanged { state ->
                                 if (state.isFocused) {
+                                    if (zone == SettingsZone.Details && item != category) {
+                                        runCatching { firstDetailFocus.requestFocus() }
+                                        return@onFocusChanged
+                                    }
                                     if (item != category) {
                                         category = item
                                     }
@@ -313,7 +324,7 @@ private fun CategoryDetails(
             ValueRow("İndirme kalitesi", settings.downloadHeightLabel, { settings.cycleDownloadHeight() }, row("dlq", true))
             InfoRow(
                 title = "Kayıt klasörü",
-                value = DownloadPaths.dir(context).absolutePath.substringAfter("/files/"),
+                value = DownloadPaths.dir(context).absolutePath,
                 modifier = row("dlpath"),
             )
             InfoRow(
@@ -322,6 +333,13 @@ private fun CategoryDetails(
                 modifier = Modifier
                     .focusProperties { left = categoryFocus }
                     .onFocusChanged { if (it.isFocused) onEnterDetails() },
+            )
+        }
+        SettingsCategory.Backup -> {
+            BackupSection(
+                firstFocus = firstDetailFocus,
+                leftFocus = categoryFocus,
+                onEnterDetails = onEnterDetails,
             )
         }
         SettingsCategory.Devices -> {

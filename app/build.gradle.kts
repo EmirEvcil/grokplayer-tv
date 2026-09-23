@@ -12,8 +12,8 @@ android {
         applicationId = "com.grokplayer.tv"
         minSdk = 24
         targetSdk = 35
-        versionCode = 66
-        versionName = "0.2.64"
+        versionCode = 72
+        versionName = "0.2.70"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

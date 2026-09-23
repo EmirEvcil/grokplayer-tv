@@ -11,22 +11,40 @@ data class YtCaptionTrack(
     val auto: Boolean,
     val visitor: String? = null,
     val lines: List<YtCaptionLine> = emptyList(),
+    val translate: Boolean = false,
 ) {
+    fun optionKey(): String =
+        "yt:$language:${if (translate) "t" else if (auto) "asr" else "m"}"
+
     fun displayLabel(): String {
         val named = label.trim()
-        val lang = languageName(language)
-        val base = named.ifBlank { lang }
-        return if (auto && !base.contains("otomatik", ignoreCase = true) && !base.contains("auto", ignoreCase = true)) {
-            "$base (Otomatik)"
+        val known = languageName(language)
+        val base = if (known.isNotBlank() && !known.equals(language, true) && known != "Altyazı") {
+            known
         } else {
-            base
+            named.ifBlank { known }
+        }
+        return when {
+            translate && !base.contains("çeviri", ignoreCase = true) -> "$base (Çeviri)"
+            auto && !translate &&
+                !base.contains("otomatik", ignoreCase = true) &&
+                !base.contains("auto", ignoreCase = true) -> "$base (Otomatik)"
+            else -> base
         }
     }
 
-    fun withFormat(fmt: String): String {
-        val stripped = baseUrl.replace(Regex("""([?&])fmt=[^&]*"""), "").trimEnd('&', '?')
+    fun withFormat(fmt: String): String = withQuery("fmt", fmt)
+
+    fun withTlang(lang: String): String = withQuery("tlang", lang)
+
+    private fun withQuery(key: String, value: String): String {
+        val stripped = baseUrl
+            .replace(Regex("""([?&])$key=[^&]*"""), "$1")
+            .replace("&&", "&")
+            .replace("?&", "?")
+            .trimEnd('&', '?')
         val sep = if (stripped.contains('?')) "&" else "?"
-        return "$stripped${sep}fmt=$fmt"
+        return "$stripped$sep$key=$value"
     }
 }
 
@@ -44,11 +62,11 @@ data class YtCaptionLine(
 
 object YouTubeCaptions {
     fun parseTracks(root: JSONObject): List<YtCaptionTrack> {
-        val tracks = root.optJSONObject("captions")
+        val renderer = root.optJSONObject("captions")
             ?.optJSONObject("playerCaptionsTracklistRenderer")
-            ?.optJSONArray("captionTracks")
             ?: return emptyList()
-        val out = ArrayList<YtCaptionTrack>(tracks.length())
+        val tracks = renderer.optJSONArray("captionTracks") ?: return emptyList()
+        val out = ArrayList<YtCaptionTrack>()
         for (i in 0 until tracks.length()) {
             val item = tracks.optJSONObject(i) ?: continue
             val url = item.optString("baseUrl")
@@ -64,8 +82,71 @@ object YouTubeCaptions {
                 auto = item.optString("kind") == "asr",
             )
         }
-        return out.distinctBy { "${it.language}:${it.auto}" }
+        return out.distinctBy { trackKey(it) }
     }
+
+    fun tracksToLoad(tracks: List<YtCaptionTrack>, wantLang: String): List<YtCaptionTrack> {
+        val real = tracks.filter { !it.translate }
+        if (real.isEmpty()) return emptyList()
+        val want = wantLang.trim().lowercase()
+        val preferred = if (want.isBlank()) {
+            emptyList()
+        } else {
+            real.filter { it.language.lowercase().startsWith(want.take(2)) }
+        }
+        return (preferred + real).distinctBy { trackKey(it) }.take(3)
+    }
+
+    fun preferredTranslation(tracks: List<YtCaptionTrack>, wantLang: String): YtCaptionTrack? {
+        val want = wantLang.trim()
+        if (want.isBlank()) return null
+        val stem = want.lowercase().take(2)
+        if (tracks.any { !it.translate && it.language.lowercase().startsWith(stem) }) return null
+        val source = tracks.firstOrNull { !it.translate && it.lines.isNotEmpty() } ?: return null
+        return source.copy(
+            language = want,
+            label = languageName(want),
+            baseUrl = source.withTlang(want),
+            translate = true,
+            lines = emptyList(),
+        )
+    }
+
+    fun usableTracks(
+        context: Context,
+        tracks: List<YtCaptionTrack>,
+        referer: String?,
+        userAgent: String?,
+        wantLang: String,
+    ): List<YtCaptionTrack> {
+        val real = tracks.filter { !it.translate }
+        if (real.isEmpty()) return emptyList()
+        val loadedLines = HashMap<String, List<YtCaptionLine>>()
+        var blocked = false
+        for (track in tracksToLoad(real, wantLang)) {
+            if (track.lines.isNotEmpty()) {
+                loadedLines[trackKey(track)] = track.lines
+                continue
+            }
+            val fetched = fetchLinesResult(context, track, referer, userAgent)
+            if (fetched.lines.isNotEmpty()) loadedLines[trackKey(track)] = fetched.lines
+            if (fetched.blocked) {
+                blocked = true
+                break
+            }
+        }
+        val withLines = real.map { track ->
+            loadedLines[trackKey(track)]?.let { track.copy(lines = it) } ?: track
+        }
+        if (blocked) return withLines
+        val extra = preferredTranslation(withLines, wantLang) ?: return withLines
+        val translated = fetchLinesResult(context, extra, referer, userAgent)
+        if (translated.blocked || translated.lines.isEmpty()) return withLines
+        return withLines + extra.copy(lines = translated.lines)
+    }
+
+    private fun trackKey(track: YtCaptionTrack): String =
+        "${track.language.lowercase()}:${track.auto}:${track.translate}"
 
     fun withVisitor(tracks: List<YtCaptionTrack>, visitor: String?): List<YtCaptionTrack> {
         if (visitor.isNullOrBlank()) return tracks
@@ -77,10 +158,12 @@ object YouTubeCaptions {
         if (right.isEmpty()) return left
         val seen = LinkedHashMap<String, YtCaptionTrack>()
         (left + right).forEach { track ->
-            val key = "${track.language}:${track.auto}"
+            val key = "${track.language.lowercase()}:${track.auto}:${track.translate}"
             val existing = seen[key]
-            if (existing == null || (existing.lines.isEmpty() && track.lines.isNotEmpty())) {
-                seen[key] = track
+            when {
+                existing == null -> seen[key] = track
+                existing.lines.isEmpty() && track.lines.isNotEmpty() -> seen[key] = track
+                existing.lines.isEmpty() && track.baseUrl.length > existing.baseUrl.length -> seen[key] = track
             }
         }
         return seen.values.toList()
@@ -131,15 +214,43 @@ object YouTubeCaptions {
         }
     }
 
+    fun readableLines(lines: List<YtCaptionLine>): List<YtCaptionLine> {
+        if (lines.isEmpty()) return lines
+        val minHold = 2_200L
+        val maxSpan = 4_800L
+        val maxChars = 84
+        val parts = mutableListOf<YtCaptionLine>()
+        var buf = lines.first()
+        for (next in lines.drop(1)) {
+            val gap = next.startMs - buf.endMs
+            val chars = captionChars(buf) + 1 + captionChars(next)
+            val span = next.endMs.coerceAtLeast(next.startMs) - buf.startMs
+            if (gap <= 400L && chars <= maxChars && span <= maxSpan) {
+                buf = YtCaptionLine(buf.startMs, maxOf(buf.endMs, next.endMs), buf.words + next.words)
+            } else {
+                parts += buf
+                buf = next
+            }
+        }
+        parts += buf
+        return parts.mapIndexed { index, line ->
+            val nextStart = parts.getOrNull(index + 1)?.startMs
+            val want = maxOf(line.endMs, line.startMs + minHold)
+            val end = if (nextStart == null) want else minOf(want, nextStart)
+            line.copy(endMs = maxOf(line.endMs, end))
+        }
+    }
+
+    private fun captionChars(line: YtCaptionLine): Int =
+        line.words.sumOf { it.text.length + 1 }
+
     fun visibleLines(lines: List<YtCaptionLine>, positionMs: Long): List<YtCaptionLine> {
         if (lines.isEmpty()) return emptyList()
-        val current = lines.lastOrNull { positionMs >= it.startMs && positionMs < it.endMs + 700L }
-        val previous = if (current != null) {
-            lines.lastOrNull { it.endMs <= current.startMs && positionMs < it.endMs + 2_400L }
-        } else {
-            lines.lastOrNull { positionMs >= it.startMs && positionMs < it.endMs + 1_600L }
-        }
-        return listOfNotNull(previous, current)
+        val active = lines.filter { positionMs >= it.startMs && positionMs < it.endMs + 900L }
+        if (active.isNotEmpty()) return if (active.size <= 2) active else active.takeLast(2)
+        return listOfNotNull(
+            lines.lastOrNull { positionMs >= it.startMs && positionMs < it.startMs + 2_600L },
+        )
     }
 
     fun hydrate(
@@ -149,16 +260,8 @@ object YouTubeCaptions {
         referer: String?,
         userAgent: String?,
     ): List<YtCaptionTrack> {
-        val fromHls = fromHls(context, playUrl, referer, userAgent)
-        val merged = merge(fromHls, tracks)
-        return merged.map { track ->
-            if (track.lines.isNotEmpty()) {
-                track
-            } else {
-                val fetched = fetchLines(context, track, referer, userAgent)
-                track.copy(lines = fetched)
-            }
-        }
+        if (tracks.isNotEmpty()) return tracks
+        return fromHls(context, playUrl, referer, userAgent)
     }
 
     fun attachTranscript(
@@ -236,59 +339,109 @@ object YouTubeCaptions {
         }
     }
 
-    fun writeVtt(context: Context, track: YtCaptionTrack): java.io.File? {
+    fun writeVtt(context: Context, track: YtCaptionTrack, videoId: String = ""): java.io.File? {
         if (track.lines.isEmpty()) return null
-        val file = java.io.File(context.cacheDir, "yt-${track.language}-${if (track.auto) "asr" else "m"}.vtt")
+        val tag = videoId.ifBlank { "v" }.replace(Regex("[^A-Za-z0-9_-]"), "").take(24)
+        val file = java.io.File(context.cacheDir, "yt-$tag-${track.language}-${if (track.auto) "asr" else "m"}.vtt")
         return runCatching {
             file.writeText(toVtt(track.lines), Charsets.UTF_8)
             file
         }.getOrNull()
     }
 
+    data class CaptionFetch(val lines: List<YtCaptionLine>, val blocked: Boolean)
+
     fun fetchLines(
         context: Context,
         track: YtCaptionTrack,
         referer: String?,
         userAgent: String?,
-    ): List<YtCaptionLine> {
-        if (track.lines.isNotEmpty()) return track.lines
-        val ua = userAgent?.takeIf { it.isNotBlank() } ?: YouTubeResolver.chromeUa
+    ): List<YtCaptionLine> = fetchLinesResult(context, track, referer, userAgent).lines
+
+    fun fetchLinesResult(
+        context: Context,
+        track: YtCaptionTrack,
+        referer: String?,
+        userAgent: String?,
+    ): CaptionFetch {
+        if (track.lines.isNotEmpty()) return CaptionFetch(track.lines, blocked = false)
         val ref = referer?.takeIf { it.isNotBlank() } ?: "https://www.youtube.com/"
         val extra = buildMap {
             put("Origin", "https://www.youtube.com")
+            put("Accept", "*/*")
             track.visitor?.takeIf { it.isNotBlank() }?.let { put("X-Goog-Visitor-Id", it) }
         }
         val id = Regex("[?&]v=([A-Za-z0-9_-]{11})").find(track.baseUrl)?.groupValues?.get(1)
+            ?: Regex("[?&]v=([A-Za-z0-9_-]{11})").find(ref)?.groupValues?.get(1)
+        val lang = track.language
         val kind = if (track.auto) "&kind=asr" else ""
+        val tlang = Regex("[?&]tlang=([^&]+)").find(track.baseUrl)?.groupValues?.get(1)
+        val tlangQ = if (tlang.isNullOrBlank()) "" else "&tlang=$tlang"
+        val primary = userAgent?.takeIf { it.isNotBlank() } ?: YouTubeResolver.chromeUa
         val urls = buildList {
-            add(track.baseUrl to "raw")
-            add(track.withFormat("srv1") to "srv1")
-            add(track.withFormat("json3") + "&c=ANDROID" to "json3-and")
-            add(track.withFormat("vtt") + "&c=ANDROID" to "vtt-and")
+            add(track.withFormat("srv3") to "srv3")
             add(track.withFormat("json3") to "json3")
             add(track.withFormat("vtt") to "vtt")
-            if (id != null) {
-                add("https://www.youtube.com/api/timedtext?v=$id&lang=${track.language}$kind&fmt=srv1" to "plain-xml")
-                add("https://www.youtube.com/api/timedtext?v=$id&lang=${track.language}$kind&fmt=json3&c=ANDROID" to "plain-and")
+            if (id != null && track.baseUrl.contains("timedtext", ignoreCase = true).not()) {
+                add("https://www.youtube.com/api/timedtext?v=$id&lang=$lang$kind$tlangQ&fmt=srv3" to "plain-srv3")
             }
         }
-        for ((url, label) in urls) {
+        var blocked = false
+        fun pull(ua: String, url: String, label: String): List<YtCaptionLine>? {
             val body = PageScanner.fetchText(context, url, ua, referer = ref, extra = extra)
-            val lines = parseAny(body.orEmpty())
-            Log.i(
-                "GrokPlayer",
-                "yt caption ${track.language} $label=${body?.length ?: 0} lines=${lines.size}",
-            )
-            if (lines.isNotEmpty()) return lines
+            if (isGoogleRestriction(body)) {
+                Log.i("GrokPlayer", "yt caption ${track.language} $label restricted")
+                blocked = true
+                return null
+            }
+            if (body.isNullOrBlank() || looksLikeHtml(body)) {
+                Log.i("GrokPlayer", "yt caption ${track.language} $label=${body?.length ?: 0} skip")
+                return null
+            }
+            val lines = parseAny(body)
+            Log.i("GrokPlayer", "yt caption ${track.language} $label=${body.length} lines=${lines.size}")
+            return lines.takeIf { it.isNotEmpty() }
         }
-        return emptyList()
+        for ((url, label) in urls) {
+            pull(primary, url, label)?.let { return CaptionFetch(it, blocked = false) }
+            if (blocked) return CaptionFetch(emptyList(), blocked = true)
+        }
+        if (primary != YouTubeResolver.chromeUa) {
+            pull(YouTubeResolver.chromeUa, urls.first().first, "srv3-chrome")?.let {
+                return CaptionFetch(it, blocked = false)
+            }
+        }
+        return CaptionFetch(emptyList(), blocked = blocked)
     }
 
     internal fun parseAny(raw: String): List<YtCaptionLine> {
-        if (raw.isBlank()) return emptyList()
+        if (raw.isBlank() || looksLikeHtml(raw)) return emptyList()
+        if (raw.contains("<timedtext", ignoreCase = true) || raw.contains("<p t=") || raw.contains("<p ")) {
+            parseSrv3(raw).takeIf { it.isNotEmpty() }?.let { return it }
+        }
         parseJson3(raw).takeIf { it.isNotEmpty() }?.let { return it }
         parseVtt(raw).takeIf { it.isNotEmpty() }?.let { return it }
+        parseSrv3(raw).takeIf { it.isNotEmpty() }?.let { return it }
         return parseSrv1(raw)
+    }
+
+    internal fun parseSrv3(xml: String): List<YtCaptionLine> {
+        if (!xml.contains("<p", ignoreCase = true)) return emptyList()
+        val regex = Regex("""<p\b([^>]*)>([\s\S]*?)</p>""", RegexOption.IGNORE_CASE)
+        val lines = mutableListOf<YtCaptionLine>()
+        regex.findAll(xml).forEach { match ->
+            val start = xmlAttr(match.groupValues[1], "t")?.toLongOrNull() ?: return@forEach
+            val dur = xmlAttr(match.groupValues[1], "d")?.toLongOrNull() ?: return@forEach
+            if (dur <= 0L) return@forEach
+            val text = decodeXml(match.groupValues[2].replace(Regex("<[^>]+>"), " ")).replace('\n', ' ').trim()
+            if (text.isBlank()) return@forEach
+            val words = text.split(Regex("\\s+")).mapIndexed { index, word ->
+                val wStart = start + index * 80L
+                YtCaptionWord(word, wStart, minOf(start + dur, wStart + 400L))
+            }
+            if (words.isNotEmpty()) lines += YtCaptionLine(start, start + dur, words)
+        }
+        return lines
     }
 
     internal fun parseSrv1(xml: String): List<YtCaptionLine> {
@@ -456,14 +609,15 @@ object YouTubeCaptions {
     }
 
     fun match(tracks: List<YtCaptionTrack>, language: String?, label: String?): YtCaptionTrack? {
-        val lang = language?.trim()?.lowercase().orEmpty()
-        if (lang.isNotEmpty() && lang != "und") {
-            tracks.firstOrNull { it.language.lowercase() == lang }?.let { return it }
-            tracks.firstOrNull { it.language.lowercase().startsWith(lang.take(2)) }?.let { return it }
-        }
         val named = label?.trim().orEmpty()
         if (named.isNotEmpty()) {
             tracks.firstOrNull { it.displayLabel().equals(named, ignoreCase = true) }?.let { return it }
+        }
+        val lang = language?.trim()?.lowercase().orEmpty()
+        if (lang.isNotEmpty() && lang != "und") {
+            tracks.firstOrNull { it.language.lowercase() == lang && !it.translate }?.let { return it }
+            tracks.firstOrNull { it.language.lowercase() == lang }?.let { return it }
+            tracks.firstOrNull { it.language.lowercase().startsWith(lang.take(2)) }?.let { return it }
         }
         return null
     }
@@ -507,6 +661,22 @@ private fun absolutize(base: String, ref: String): String {
     } catch (_: Exception) {
         ref
     }
+}
+
+private fun looksLikeHtml(raw: String): Boolean {
+    val head = raw.trimStart().take(80).lowercase()
+    return head.startsWith("<!doctype html") || head.startsWith("<html") || head.contains("<title>before you continue")
+}
+
+private fun isGoogleRestriction(raw: String?): Boolean {
+    if (raw.isNullOrBlank()) return false
+    val text = raw.lowercase()
+    return "automated queries" in text || "sorry..." in text && "<html" in text
+}
+
+private fun xmlAttr(attrs: String, name: String): String? {
+    Regex("""\b$name=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(attrs)?.groupValues?.get(1)?.let { return it }
+    return Regex("""\b$name=([^\s>]+)""", RegexOption.IGNORE_CASE).find(attrs)?.groupValues?.get(1)
 }
 
 private fun decodeXml(text: String): String =

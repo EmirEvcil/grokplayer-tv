@@ -156,6 +156,51 @@ class VodDownloaderTest {
     }
 
     @Test
+    fun prefersAvcOverHigherVp9() {
+        val picked = chooseHlsVariant(
+            listOf(
+                HlsVideoVariant(720, 2_500_000, "https://x/vp9", "aud", codecs = "vp09.00.51.08,mp4a.40.2"),
+                HlsVideoVariant(720, 1_200_000, "https://x/avc", "aud", codecs = "avc1.4d401f,mp4a.40.2"),
+            ),
+            720,
+        )!!
+        assertEquals("https://x/avc", picked.uri)
+    }
+
+    @Test
+    fun chooseVariantDoesNotFallToLowestWhenCapMisses() {
+        val variants = listOf(
+            HlsVideoVariant(144, 100_000, "https://x/144", "aud"),
+            HlsVideoVariant(1080, 5_000_000, "https://x/1080", "aud"),
+        )
+        val picked = chooseHlsVariant(variants, 720)!!
+        assertEquals(1080, picked.height)
+        val with360 = chooseHlsVariant(
+            variants + HlsVideoVariant(360, 800_000, "https://x/360", "aud"),
+            720,
+        )!!
+        assertEquals(360, with360.height)
+        val exact = chooseHlsVariant(variants, 144)!!
+        assertEquals(144, exact.height)
+        val best = chooseHlsVariant(variants, 0)!!
+        assertEquals(1080, best.height)
+    }
+
+    @Test
+    fun googlevideoSegmentsCountAsFragmentedMp4() {
+        val parts = hlsMediaParts(
+            """
+            #EXTM3U
+            #EXT-X-MAP:URI="https://rr1.googlevideo.com/init"
+            #EXTINF:5.0,
+            https://rr1.googlevideo.com/videoplayback/sq/0
+            """.trimIndent(),
+        )
+        assertTrue(parts.fragmentedMp4)
+        assertEquals("https://rr1.googlevideo.com/init", parts.mapUri)
+    }
+
+    @Test
     fun mpegTsPlaylistIsNotFragmentedMp4() {
         val body = """
             #EXTM3U
@@ -278,16 +323,17 @@ class VodDownloaderTest {
                 maxHeight = 720,
                 cancelled = { false },
                 onProgress = {},
+                preferredAudioLang = "tr",
             )
             assertEquals("m3u8", file.extension.lowercase())
             assertTrue(isPlayableDownload(file))
             val master = file.readText()
             assertTrue(master.contains("a-en.m3u8"))
             assertTrue(master.contains("a-tr.m3u8"))
-            val defaultLine = master.lineSequence().first { it.contains("LANGUAGE=\"en\"") }
+            val defaultLine = master.lineSequence().first { it.contains("LANGUAGE=\"tr\"") }
             assertTrue(defaultLine.contains("DEFAULT=YES"))
-            val dubLine = master.lineSequence().first { it.contains("LANGUAGE=\"tr\"") }
-            assertTrue(dubLine.contains("DEFAULT=NO"))
+            val originalLine = master.lineSequence().first { it.contains("LANGUAGE=\"en\"") }
+            assertTrue(originalLine.contains("DEFAULT=NO"))
             assertTrue(File(dir, "a-en.m3u8").isFile)
             assertTrue(File(dir, "a-tr.m3u8").isFile)
             assertEquals(5_000L, localHlsDurationMs(file))
@@ -339,6 +385,9 @@ class VodDownloaderTest {
         val picked = pickDefaultAudio(tracks, "aud", null)
         assertEquals("en", picked?.language)
         assertEquals("en.m3u8", picked?.uri)
+        val turkish = pickDefaultAudio(tracks, "aud", "tr")
+        assertEquals("tr", turkish?.language)
+        assertEquals("tr.m3u8", turkish?.uri)
     }
 
     @Test

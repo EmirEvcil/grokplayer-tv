@@ -11,6 +11,7 @@ import java.io.FileOutputStream
 import java.net.URL
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -20,6 +21,19 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 enum class DownloadStatus { Queued, Running, Done, Failed }
+
+internal object DownloadTurn {
+    fun nextQueued(
+        items: List<Pair<String, DownloadStatus>>,
+        cancelled: Set<String>,
+        busy: Boolean,
+    ): String? {
+        if (busy) return null
+        return items.firstOrNull { (id, status) ->
+            status == DownloadStatus.Queued && id !in cancelled
+        }?.first
+    }
+}
 
 data class DownloadItem(
     val id: String,
@@ -54,8 +68,7 @@ data class DownloadItem(
 }
 
 object DownloadPaths {
-    fun dir(context: Context): File =
-        File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), "downloads").apply { mkdirs() }
+    fun dir(context: Context): File = SharedRoots.downloads(context).apply { mkdirs() }
 
     fun freeBytes(context: Context): Long = dir(context).usableSpace
 }
@@ -65,7 +78,18 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
     private val prefs = app.getSharedPreferences("downloads", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
+    private var runningId: String? = null
     private val cancelled = mutableSetOf<String>()
+    private val attempt = HashMap<String, Int>()
+
+    init {
+        scope.launch {
+            val moved = SharedRoots.migrateLegacyDownloads(app)
+            if (moved) {
+                withContext(Dispatchers.Main) { items = load() }
+            }
+        }
+    }
 
     var items by mutableStateOf(emptyList<DownloadItem>())
         private set
@@ -101,6 +125,8 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
         ) {
             return false
         }
+        cancelled.remove(id)
+        bump(id)
         purgePartial(item)
         items = items.map {
             if (it.id == id) {
@@ -205,6 +231,7 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
 
     fun cancel(id: String) {
         cancelled += id
+        bump(id)
         val item = items.firstOrNull { it.id == id }
         if (item != null && item.status != DownloadStatus.Done) {
             purgePartial(item)
@@ -217,6 +244,8 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
             }
         }
         persist()
+        if (runningId == id) job?.cancel()
+        pump(settings.downloadHeight)
     }
 
     fun remove(id: String) {
@@ -230,20 +259,58 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
     fun titleForPath(path: String): String? =
         items.firstOrNull { it.localPath == path }?.title
 
-    private fun pump(maxHeight: Int) {
-        if (job?.isActive == true) return
-        val next = items.firstOrNull { it.status == DownloadStatus.Queued } ?: return
-        job = scope.launch { runItem(next, maxHeight) }
+    private fun bump(id: String) {
+        attempt[id] = tokenOf(id) + 1
     }
 
-    private suspend fun runItem(item: DownloadItem, maxHeight: Int) {
-        if (item.id in cancelled) {
-            job = null
-            pump(maxHeight)
-            return
+    private fun tokenOf(id: String): Int = attempt[id] ?: 0
+
+    private fun stillCurrent(id: String, token: Int): Boolean =
+        tokenOf(id) == token && id !in cancelled
+
+    private fun pump(maxHeight: Int) {
+        scope.launch(Dispatchers.Main.immediate) {
+            val stuck = items.filter { it.status == DownloadStatus.Queued && it.id in cancelled }
+            if (stuck.isNotEmpty()) {
+                items = items.map { item ->
+                    if (item.status == DownloadStatus.Queued && item.id in cancelled) {
+                        item.copy(status = DownloadStatus.Failed, error = "İptal edildi", localPath = null, progress = 0f)
+                    } else {
+                        item
+                    }
+                }
+                persist()
+            }
+            val nextId = DownloadTurn.nextQueued(
+                items.map { it.id to it.status },
+                cancelled,
+                job?.isActive == true,
+            ) ?: return@launch
+            val next = items.firstOrNull { it.id == nextId } ?: return@launch
+            val token = tokenOf(next.id)
+            runningId = next.id
+            var launched: Job? = null
+            val mine = scope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    runItem(next, maxHeight, token)
+                } finally {
+                    withContext(Dispatchers.Main.immediate) {
+                        if (runningId == next.id) runningId = null
+                        if (job === launched) job = null
+                    }
+                    pump(maxHeight)
+                }
+            }
+            launched = mine
+            job = mine
+            mine.start()
         }
+    }
+
+    private suspend fun runItem(item: DownloadItem, maxHeight: Int, token: Int) {
+        if (!stillCurrent(item.id, token)) return
         withContext(Dispatchers.Main) {
-            if (item.id in cancelled) return@withContext
+            if (!stillCurrent(item.id, token)) return@withContext
             items = items.map {
                 if (it.id == item.id && it.status == DownloadStatus.Queued) {
                     it.copy(status = DownloadStatus.Running, progress = 0f, error = null)
@@ -252,22 +319,19 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
                 }
             }
         }
-        if (item.id in cancelled) {
-            job = null
-            pump(maxHeight)
-            return
-        }
+        if (!stillCurrent(item.id, token)) return
         val dest = destFile(item, "ts")
         val cap = if (maxHeight <= 0) Int.MAX_VALUE else maxHeight
         var lastEmitAt = 0L
         var lastShown = -1f
+        val playUrl = freshDownloadUrl(item)
         val result = runCatching {
             StreamHttp.client(app)
             VodDownloader.download(
-                url = item.url,
+                url = playUrl,
                 dest = dest,
                 maxHeight = cap,
-                cancelled = { item.id in cancelled },
+                cancelled = { !stillCurrent(item.id, token) },
                 preferredAudioLang = settings.audioLang.ifBlank { null },
                 onProgress = { value ->
                     val now = android.os.SystemClock.elapsedRealtime()
@@ -286,13 +350,18 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
                 },
             )
         }
+        if (result.exceptionOrNull() is kotlinx.coroutines.CancellationException) {
+            return
+        }
+        if (!stillCurrent(item.id, token)) return
         val file = result.getOrNull()
-        val aborted = item.id in cancelled || isCancel(result.exceptionOrNull())
+        val aborted = isCancel(result.exceptionOrNull())
         if (file != null && !aborted) {
             downloadYoutubeCaptions(item, file)
         }
         val duration = file?.let { localHlsDurationMs(it) } ?: 0L
         withContext(Dispatchers.Main) {
+            if (!stillCurrent(item.id, token)) return@withContext
             items = items.map { current ->
                 if (current.id != item.id) {
                     current
@@ -325,8 +394,6 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
             }
             persist()
         }
-        job = null
-        pump(maxHeight)
     }
 
     private fun persist() {
@@ -411,6 +478,17 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
         )
     }
 
+    private fun freshDownloadUrl(item: DownloadItem): String {
+        val page = item.pageUrl ?: item.url
+        val id = com.grokplayer.tv.data.scan.YouTubeResolver.videoId(page) ?: return item.url
+        val watch = item.pageUrl?.takeIf { com.grokplayer.tv.data.scan.YouTubeResolver.videoId(it) != null }
+            ?: "https://www.youtube.com/watch?v=$id"
+        val hit = runCatching {
+            com.grokplayer.tv.data.scan.YouTubeResolver.resolve(app, id, watch)
+        }.getOrNull()
+        return hit?.playUrl?.takeIf { it.isNotBlank() } ?: item.url
+    }
+
     private fun writeMeta(item: DownloadItem, videoFile: File, durationMs: Long) {
         val parent = videoFile.parentFile ?: return
         parent.mkdirs()
@@ -433,16 +511,21 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
         }.getOrNull() ?: return
         val stem = videoFile.nameWithoutExtension
         val parent = videoFile.parentFile ?: return
-        hit.captions.forEach { track ->
-            val lines = track.lines.ifEmpty {
-                com.grokplayer.tv.data.scan.YouTubeCaptions.fetchLines(
+        val tracks = hit.captions.filter { !it.translate && "tlang=" !in it.baseUrl }.take(4)
+        for (track in tracks) {
+            val fetched = if (track.lines.isNotEmpty()) {
+                com.grokplayer.tv.data.scan.YouTubeCaptions.CaptionFetch(track.lines, blocked = false)
+            } else {
+                com.grokplayer.tv.data.scan.YouTubeCaptions.fetchLinesResult(
                     app,
                     track,
                     hit.referer,
                     hit.userAgent,
                 )
             }
-            if (lines.isEmpty()) return@forEach
+            if (fetched.blocked) break
+            val lines = fetched.lines
+            if (lines.isEmpty()) continue
             val lang = track.language.ifBlank { "und" }.lowercase()
             File(parent, "$stem.$lang.vtt").writeText(
                 com.grokplayer.tv.data.scan.YouTubeCaptions.toVtt(lines),
@@ -483,7 +566,8 @@ internal data class HlsMediaParts(
             return segments.any { ref ->
                 val name = ref.lowercase().substringBefore('?')
                 name.endsWith(".m4s") || name.endsWith(".mp4") ||
-                    name.endsWith(".cmfv") || name.endsWith(".cmfa")
+                    name.endsWith(".cmfv") || name.endsWith(".cmfa") ||
+                    "googlevideo.com" in name || "/sq/" in name
             }
         }
 }
@@ -562,6 +646,49 @@ internal fun rewriteMediaPlaylist(body: String, localNames: List<String>): Strin
     return out.joinToString("\n", postfix = "\n")
 }
 
+internal data class HlsVideoVariant(
+    val height: Int,
+    val bandwidth: Int,
+    val uri: String,
+    val audioGroup: String?,
+    val codecs: String = "",
+)
+
+internal fun codecFamily(codecs: String): String {
+    val text = codecs.lowercase()
+    return when {
+        "avc1" in text || "avc3" in text -> "avc"
+        "hvc1" in text || "hev1" in text -> "hvc"
+        "vp09" in text || "vp9" in text -> "vp9"
+        "av01" in text -> "av1"
+        else -> "other"
+    }
+}
+
+internal fun chooseHlsVariant(variants: List<HlsVideoVariant>, maxHeight: Int): HlsVideoVariant? {
+    if (variants.isEmpty()) return null
+    val order = listOf("avc", "hvc", "other", "vp9", "av1")
+    for (family in order) {
+        val group = variants.filter { codecFamily(it.codecs) == family }
+        pickHlsHeight(group, maxHeight)?.let { return it }
+    }
+    return null
+}
+
+private fun pickHlsHeight(variants: List<HlsVideoVariant>, maxHeight: Int): HlsVideoVariant? {
+    if (variants.isEmpty()) return null
+    val cap = if (maxHeight <= 0) Int.MAX_VALUE else maxHeight
+    val fit = variants.filter { it.height in 1..cap }
+    val bestFit = fit.maxByOrNull { it.bandwidth }
+    val nextUp = variants.filter { it.height >= cap }.minByOrNull { it.height }
+    val minAccept = (cap / 2).coerceAtLeast(1)
+    return when {
+        bestFit != null && (nextUp == null || bestFit.height >= minAccept) -> bestFit
+        nextUp != null -> nextUp
+        else -> variants.maxByOrNull { it.bandwidth }
+    }
+}
+
 internal fun pickDefaultAudio(
     tracks: List<com.grokplayer.tv.data.scan.HlsMediaTag>,
     groupId: String?,
@@ -574,12 +701,12 @@ internal fun pickDefaultAudio(
         audio.filter { it.groupId == groupId }.ifEmpty { audio }
     }
     if (inGroup.isEmpty()) return null
-    inGroup.firstOrNull { it.isDefault }?.let { return it }
-    inGroup.firstOrNull { it.name.contains("original", ignoreCase = true) }?.let { return it }
     val want = preferredLang?.trim()?.lowercase().orEmpty()
     if (want.isNotBlank()) {
         inGroup.firstOrNull { it.language.lowercase().startsWith(want.take(2)) }?.let { return it }
     }
+    inGroup.firstOrNull { it.isDefault }?.let { return it }
+    inGroup.firstOrNull { it.name.contains("original", ignoreCase = true) }?.let { return it }
     return inGroup.firstOrNull()
 }
 
@@ -632,10 +759,18 @@ internal fun isPlayableDownload(file: File): Boolean {
     }
     if (file.length() < 32L) return false
     return when (sniffBox(file)) {
-        "ftyp", "ts" -> true
+        "ftyp" -> true
+        "ts" -> !isYoutubeConcatDump(file)
         "moof", "mdat", "styp" -> false
         else -> file.extension.lowercase() in PLAYABLE_FALLBACK_EXT
     }
+}
+
+internal fun isYoutubeConcatDump(file: File): Boolean {
+    val meta = file.parentFile?.resolve("meta.json") ?: return false
+    if (!meta.isFile) return false
+    val text = runCatching { meta.readText() }.getOrNull().orEmpty().lowercase()
+    return "googlevideo.com" in text || "youtube.com/watch" in text || "youtu.be/" in text
 }
 
 internal fun localPlaybackFile(path: String?, fileUriPath: String?): File? {
@@ -644,7 +779,7 @@ internal fun localPlaybackFile(path: String?, fileUriPath: String?): File? {
     return file?.takeIf { isPlayableDownload(it) }
 }
 
-private val PLAYABLE_FALLBACK_EXT = setOf("mp4", "mkv", "webm", "mov", "m4v", "avi", "m4a")
+private val PLAYABLE_FALLBACK_EXT = setOf("mkv", "webm", "mov", "m4v", "avi")
 
 internal object VodDownloader {
     fun download(
@@ -703,7 +838,15 @@ internal object VodDownloader {
                     audioTags.filter { it.groupId == picked?.audioGroup }.ifEmpty { audioTags }
                 }
                 val audioFiles = ArrayList<Pair<com.grokplayer.tv.data.scan.HlsMediaTag, String>>()
-                val unique = inGroup.distinctBy { it.uri }
+                val preferred = preferredAudioLang?.trim()?.lowercase().orEmpty()
+                val original = inGroup.firstOrNull { it.isDefault }
+                    ?: inGroup.firstOrNull { it.name.contains("original", ignoreCase = true) }
+                val preferredTrack = if (preferred.isBlank()) {
+                    null
+                } else {
+                    inGroup.firstOrNull { it.language.lowercase().startsWith(preferred.take(2)) }
+                }
+                val unique = listOfNotNull(defaultAudio, original, preferredTrack).distinctBy { it.uri }
                 unique.forEachIndexed { aIndex, tag ->
                     if (cancelled()) error("İptal edildi")
                     val audioUrl = resolve(resolved, tag.uri)
@@ -875,8 +1018,7 @@ internal object VodDownloader {
 
     private fun pickVariant(masterUrl: String, body: String, maxHeight: Int): PickedVariant? {
         val lines = mediaLines(body)
-        data class Variant(val height: Int, val bandwidth: Int, val uri: String, val audioGroup: String?)
-        val variants = mutableListOf<Variant>()
+        val variants = mutableListOf<HlsVideoVariant>()
         var index = 0
         while (index < lines.size) {
             val line = lines[index]
@@ -886,16 +1028,21 @@ internal object VodDownloader {
                 val bandwidth = Regex("BANDWIDTH=(\\d+)", RegexOption.IGNORE_CASE)
                     .find(line)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
                 val audioGroup = attr(line, "AUDIO")
+                val codecs = attr(line, "CODECS").orEmpty()
                 val uri = lines.drop(index + 1).firstOrNull { it.isNotEmpty() && !it.startsWith("#") }
-                if (uri != null && height > 0) {
-                    variants += Variant(height, bandwidth, resolve(masterUrl, uri), audioGroup)
+                if (uri != null) {
+                    variants += HlsVideoVariant(
+                        height = height,
+                        bandwidth = bandwidth,
+                        uri = resolve(masterUrl, uri),
+                        audioGroup = audioGroup,
+                        codecs = codecs,
+                    )
                 }
             }
             index++
         }
-        if (variants.isEmpty()) return null
-        val fit = variants.filter { it.height <= maxHeight }
-        val chosen = fit.maxByOrNull { it.bandwidth } ?: variants.minBy { it.height }
+        val chosen = chooseHlsVariant(variants, maxHeight) ?: return null
         return PickedVariant(chosen.uri, chosen.audioGroup)
     }
 

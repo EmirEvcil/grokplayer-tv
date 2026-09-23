@@ -21,6 +21,7 @@ data class ScanHit(
     val detail: String = "",
     val captions: List<YtCaptionTrack> = emptyList(),
     val audios: List<YtAudioTrack> = emptyList(),
+    val storyboardSpec: String? = null,
 ) {
     fun toVideo(): com.grokplayer.tv.data.LibraryVideo = com.grokplayer.tv.data.LibraryVideo(
         id = "scan:${playUrl.hashCode()}",

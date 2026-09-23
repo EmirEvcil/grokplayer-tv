@@ -66,11 +66,6 @@ object GrokType {
         fontWeight = FontWeight.Bold,
         fontSize = 28.sp,
     )
-    val comingTitle = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Bold,
-        fontSize = 28.sp,
-    )
     val comingBody = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Normal,

@@ -17,7 +17,7 @@ class PlaybackSettings(context: Context) {
         private set
     var seekStepSeconds by mutableIntStateOf(prefs.getInt("seek_step", 10))
         private set
-    var defaultSpeed by mutableFloatStateOf(snapSpeed(prefs.getFloat("speed", 1f)))
+    var defaultSpeed by mutableFloatStateOf(snapSpeed(readSpeed()))
         private set
     var hideControlsSeconds by mutableIntStateOf(prefs.getInt("hide_controls", 2))
         private set
@@ -160,6 +160,17 @@ class PlaybackSettings(context: Context) {
         720 -> "720p"
         480 -> "480p"
         else -> "En iyi"
+    }
+
+    private fun readSpeed(): Float {
+        val stored = try {
+            prefs.getFloat("speed", 1f)
+        } catch (_: ClassCastException) {
+            val number = (prefs.all["speed"] as? Number)?.toFloat() ?: 1f
+            prefs.edit().putFloat("speed", number).commit()
+            number
+        }
+        return stored
     }
 
     companion object {

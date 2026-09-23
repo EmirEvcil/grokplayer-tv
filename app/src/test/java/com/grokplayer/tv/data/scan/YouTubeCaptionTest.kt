@@ -25,6 +25,105 @@ class YouTubeCaptionTest {
     }
 
     @Test
+    fun listsOnlyTracksThisVideoHas() {
+        val root = JSONObject(
+            """
+            {"captions":{"playerCaptionsTracklistRenderer":{
+              "captionTracks":[
+                {"baseUrl":"https://www.youtube.com/api/timedtext?v=abc&lang=en&kind=asr","languageCode":"en","kind":"asr","name":{"simpleText":"English (auto)"}}
+              ],
+              "translationLanguages":[
+                {"languageCode":"de","languageName":{"simpleText":"German"}},
+                {"languageCode":"tr","languageName":{"simpleText":"Turkish"}},
+                {"languageCode":"ab","languageName":{"simpleText":"Abkhazian"}}
+              ]
+            }}}
+            """.trimIndent(),
+        )
+        val tracks = YouTubeCaptions.parseTracks(root)
+        assertEquals(1, tracks.size)
+        assertEquals("en", tracks[0].language)
+        assertTrue(tracks[0].auto)
+        assertTrue(tracks.none { it.translate })
+        assertTrue(tracks.none { "tlang=" in it.baseUrl })
+        val loaded = tracks[0].copy(
+            lines = listOf(YtCaptionLine(0, 1_000, listOf(YtCaptionWord("hi", 0, 1_000)))),
+        )
+        val extra = YouTubeCaptions.preferredTranslation(listOf(loaded), "tr")!!
+        assertEquals("tr", extra.language)
+        assertTrue(extra.translate)
+        assertTrue(extra.baseUrl.contains("tlang=tr"))
+        assertEquals(null, YouTubeCaptions.preferredTranslation(listOf(loaded), "en"))
+        assertEquals(listOf("en"), YouTubeCaptions.tracksToLoad(tracks, "tr").map { it.language })
+    }
+
+    @Test
+    fun readableLinesJoinRapidCuesAndHoldAPause() {
+        fun line(start: Long, end: Long, text: String) =
+            YtCaptionLine(start, end, listOf(YtCaptionWord(text, start, end)))
+        val shown = YouTubeCaptions.readableLines(
+            listOf(
+                line(0, 600, "one"),
+                line(600, 1_200, "two"),
+                line(1_200, 1_800, "three"),
+                line(5_000, 5_400, "later"),
+            ),
+        )
+        assertEquals(2, shown.size)
+        assertEquals(listOf("one", "two", "three"), shown[0].words.map { it.text })
+        assertTrue(shown[0].endMs >= 1_800L)
+        assertEquals("later", shown[1].words.single().text)
+        assertTrue(shown[1].endMs - shown[1].startMs >= 2_000L)
+        assertTrue(YouTubeCaptions.visibleLines(shown, 1_500L).any { line -> line.words.any { it.text == "three" } })
+        assertTrue(YouTubeCaptions.visibleLines(shown, 6_500L).any { line -> line.words.any { it.text == "later" } })
+        assertTrue(YouTubeCaptions.visibleLines(shown, 6_500L).none { line -> line.words.any { it.text == "one" } })
+    }
+
+    @Test
+    fun parsesSrv3Paragraphs() {
+        val xml = """
+            <timedtext>
+              <body>
+                <p t="1000" d="2000">hello world</p>
+                <p t="4000" d="800">again</p>
+              </body>
+            </timedtext>
+        """.trimIndent()
+        val lines = YouTubeCaptions.parseSrv3(xml)
+        assertEquals(2, lines.size)
+        assertEquals("hello", lines[0].words.first().text)
+        assertEquals(1000L, lines[0].startMs)
+        assertEquals("again", lines[1].words.first().text)
+    }
+
+    @Test
+    fun parsesSrv3WhenDurationComesBeforeStart() {
+        val xml = """<timedtext><body><p d="2000" t="500" w="1"><s>hello</s><s t="400"> world</s></p><p t="3000" d="800" a="1">
+</p></body></timedtext>"""
+        val lines = YouTubeCaptions.parseSrv3(xml)
+        assertEquals(1, lines.size)
+        assertEquals(500L, lines[0].startMs)
+        assertEquals("hello", lines[0].words.first().text)
+        assertEquals("world", lines[0].words.last().text)
+    }
+
+    @Test
+    fun withFormatKeepsOtherQueryParams() {
+        val track = YtCaptionTrack(
+            "en",
+            "English",
+            "https://www.youtube.com/api/timedtext?fmt=json3&lang=en&v=abc",
+            auto = true,
+        )
+        val url = track.withFormat("srv3")
+        assertTrue(url.contains("fmt=srv3"))
+        assertTrue(url.contains("lang=en"))
+        assertTrue(url.contains("v=abc"))
+        assertTrue(!url.contains("?&"))
+        assertTrue(!url.contains("&&"))
+    }
+
+    @Test
     fun parsesJson3WordTiming() {
         val json = """
             {"wireMagic":"pb3","events":[

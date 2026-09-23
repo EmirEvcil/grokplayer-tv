@@ -2,6 +2,7 @@ package com.grokplayer.tv.ui.downloads
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,6 +51,8 @@ import com.grokplayer.tv.ui.theme.GrokType
 import com.grokplayer.tv.ui.theme.GrokWhite
 import com.grokplayer.tv.ui.theme.GrokYellow
 import com.grokplayer.tv.ui.theme.InterceptBack
+import com.grokplayer.tv.data.OverlayRestore
+import com.grokplayer.tv.ui.theme.LocalFocusLock
 import com.grokplayer.tv.ui.theme.RememberFocusLock
 
 @Composable
@@ -66,9 +69,11 @@ fun DownloadsScreen(
     var lastFocusedId by rememberSaveable { mutableStateOf<String?>(null) }
     var restoreAfterModal by remember { mutableStateOf(false) }
     val rowFocus = remember { mutableMapOf<String, FocusRequester>() }
+    val focusLock = LocalFocusLock.current
     fun requester(id: String) = rowFocus.getOrPut(id) { FocusRequester() }
     fun closeOptions() {
         optionsFor = null
+        focusLock.reset()
         restoreAfterModal = true
     }
     fun dismiss(): Boolean {
@@ -78,13 +83,18 @@ fun DownloadsScreen(
     }
     InterceptBack(enabled = optionsFor != null) { dismiss() }
     BackHandler(enabled = optionsFor != null) { dismiss() }
+    LaunchedEffect(optionsFor) {
+        OverlayRestore.unlock(focusLock, optionsFor != null)
+    }
     LaunchedEffect(restoreAfterModal, downloads.items.map { it.id }) {
         if (!restoreAfterModal || optionsFor != null) return@LaunchedEffect
-        kotlinx.coroutines.delay(40)
+        focusLock.reset()
+        OverlayRestore.unlock(focusLock, false)
+        kotlinx.coroutines.delay(200)
         val items = downloads.items
         val target = items.firstOrNull { it.id == lastFocusedId } ?: items.firstOrNull()
         lastFocusedId = target?.id
-        repeat(6) {
+        repeat(8) {
             val ok = if (target != null) {
                 runCatching { requester(target.id).requestFocus() }.getOrDefault(false)
             } else {
@@ -96,6 +106,8 @@ fun DownloadsScreen(
             }
             kotlinx.coroutines.delay(40)
         }
+        runCatching { firstFocus.requestFocus() }
+        runCatching { railFocus.requestFocus() }
         restoreAfterModal = false
     }
 
@@ -122,7 +134,10 @@ fun DownloadsScreen(
                 EmptyState(
                     title = stringResource(R.string.empty_downloads_title),
                     body = stringResource(R.string.empty_downloads_body),
-                    modifier = Modifier.focusRequester(firstFocus),
+                    modifier = Modifier
+                        .focusRequester(firstFocus)
+                        .focusable()
+                        .focusProperties { left = railFocus },
                 )
             } else {
                 LazyColumn(
