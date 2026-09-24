@@ -127,6 +127,7 @@ fun BackupSection(
     var reviews by remember { mutableStateOf(mapOf<String, BackupPreview.Review>()) }
     var mergeNotes by remember { mutableStateOf<List<String>>(emptyList()) }
     var mergeSummary by remember { mutableStateOf("") }
+    var anchor by remember { mutableStateOf("create") }
     val focusMemory = remember { mutableMapOf<String, String>() }
     val scrolls = remember { mutableMapOf<String, ScrollState>() }
     fun scrollOf(id: String): ScrollState = scrolls.getOrPut(id) { ScrollState(0) }
@@ -316,6 +317,7 @@ fun BackupSection(
                 onOpen = { backup ->
                     focusMemory["home"] = "backup:${backup.file.absolutePath}"
                     screen = BackupScreen.Detail(backup.file.absolutePath)
+                    anchor = focusMemory["detail:${backup.file.absolutePath}"] ?: "review"
                     pendingFocus = focusMemory["detail:${backup.file.absolutePath}"] ?: "cat:first"
                 },
                 onToggle = { backup ->
@@ -367,6 +369,9 @@ fun BackupSection(
                 catalog = catalogs[current.path],
                 context = context,
                 leftFocus = leftFocus,
+                pageFocus = firstFocus,
+                anchor = anchor,
+                onAnchor = { anchor = it },
                 onEnterDetails = onEnterDetails,
                 requester = ::requester,
                 scroll = scrollOf("detail:${current.path}"),
@@ -374,9 +379,11 @@ fun BackupSection(
                 onOpen = { catalogId ->
                     focusMemory["detail:${current.path}"] = "cat:$catalogId"
                     screen = BackupScreen.Category(current.path, catalogId)
+                    anchor = focusMemory["category:${current.path}:$catalogId"] ?: "entry:0"
                     pendingFocus = focusMemory["category:${current.path}:$catalogId"] ?: "entry:0"
                 },
                 onReview = {
+                    anchor = "cancel"
                     screen = BackupScreen.Preview(current.path)
                     pendingFocus = "cancel"
                 },
@@ -388,6 +395,9 @@ fun BackupSection(
                     title = catalog?.title ?: "Ayrıntı",
                     rows = catalog?.rows.orEmpty(),
                     leftFocus = leftFocus,
+                    pageFocus = firstFocus,
+                    anchor = anchor,
+                    onAnchor = { anchor = it },
                     onEnterDetails = onEnterDetails,
                     requester = ::requester,
                     scroll = scrollOf("category:${current.path}:${current.catalogId}"),
@@ -397,6 +407,7 @@ fun BackupSection(
                         if (row != null && row.children.isNotEmpty()) {
                             focusMemory["category:${current.path}:${current.catalogId}"] = "entry:$index"
                             screen = BackupScreen.Entries(current.path, current.catalogId, index)
+                            anchor = "line:0"
                             pendingFocus = "line:0"
                         }
                     },
@@ -411,6 +422,9 @@ fun BackupSection(
                     title = row?.title ?: "Ayrıntı",
                     rows = row?.children?.map { it.title to it.detail }.orEmpty(),
                     leftFocus = leftFocus,
+                    pageFocus = firstFocus,
+                    anchor = anchor,
+                    onAnchor = { anchor = it },
                     onEnterDetails = onEnterDetails,
                     requester = ::requester,
                     scroll = scrollOf("entries:${current.path}:${current.catalogId}:${current.index}"),
@@ -420,6 +434,9 @@ fun BackupSection(
                 backup = backupOf(current.path),
                 review = reviews[current.path],
                 leftFocus = leftFocus,
+                pageFocus = firstFocus,
+                anchor = anchor,
+                onAnchor = { anchor = it },
                 onEnterDetails = onEnterDetails,
                 requester = ::requester,
                 scroll = scrollOf("preview:${current.path}"),
@@ -717,6 +734,9 @@ private fun DetailPage(
     catalog: List<BackupPreview.Catalog>?,
     context: android.content.Context,
     leftFocus: FocusRequester,
+    pageFocus: FocusRequester,
+    anchor: String,
+    onAnchor: (String) -> Unit,
     onEnterDetails: () -> Unit,
     requester: (String) -> FocusRequester,
     scroll: ScrollState,
@@ -746,8 +766,12 @@ private fun DetailPage(
                         down = next,
                         focus = requester("cat:${item.id}"),
                         onEnterDetails = onEnterDetails,
+                        also = if (anchor == "cat:${item.id}") pageFocus else null,
                         onClick = { onOpen(item.id) },
-                        onFocused = { onFocus("cat:${item.id}") },
+                        onFocused = {
+                            onAnchor("cat:${item.id}")
+                            onFocus("cat:${item.id}")
+                        },
                     )
                 }
             }
@@ -762,10 +786,14 @@ private fun DetailPage(
                 down = null,
                 focus = requester("delete"),
                 onEnterDetails = onEnterDetails,
+                also = if (anchor == "delete") pageFocus else null,
                 modifier = Modifier.weight(1f),
                 right = requester("review"),
                 onClick = onDelete,
-                onFocused = { onFocus("delete") },
+                onFocused = {
+                    onAnchor("delete")
+                    onFocus("delete")
+                },
             )
             ActionRow(
                 title = "Geri yüklemeyi incele",
@@ -776,9 +804,13 @@ private fun DetailPage(
                 down = null,
                 focus = requester("review"),
                 onEnterDetails = onEnterDetails,
+                also = if (anchor == "review") pageFocus else null,
                 modifier = Modifier.weight(1f),
                 onClick = onReview,
-                onFocused = { onFocus("review") },
+                onFocused = {
+                    onAnchor("review")
+                    onFocus("review")
+                },
             )
         }
     }
@@ -789,6 +821,9 @@ private fun CategoryPage(
     title: String,
     rows: List<BackupPreview.Entry>,
     leftFocus: FocusRequester,
+    pageFocus: FocusRequester,
+    anchor: String,
+    onAnchor: (String) -> Unit,
     onEnterDetails: () -> Unit,
     requester: (String) -> FocusRequester,
     scroll: ScrollState,
@@ -812,8 +847,12 @@ private fun CategoryPage(
                     down = if (index == rows.lastIndex) null else requester("entry:${index + 1}"),
                     focus = requester("entry:$index"),
                     onEnterDetails = onEnterDetails,
+                    also = if (anchor == "entry:$index") pageFocus else null,
                     onClick = { onOpen(index) },
-                    onFocused = { onFocus("entry:$index") },
+                    onFocused = {
+                        onAnchor("entry:$index")
+                        onFocus("entry:$index")
+                    },
                 )
             }
         }
@@ -825,6 +864,9 @@ private fun LinesPage(
     title: String,
     rows: List<Pair<String, String>>,
     leftFocus: FocusRequester,
+    pageFocus: FocusRequester,
+    anchor: String,
+    onAnchor: (String) -> Unit,
     onEnterDetails: () -> Unit,
     requester: (String) -> FocusRequester,
     scroll: ScrollState,
@@ -842,7 +884,9 @@ private fun LinesPage(
                     down = if (index == rows.lastIndex) null else requester("line:${index + 1}"),
                     focus = requester("line:$index"),
                     onEnterDetails = onEnterDetails,
+                    also = if (anchor == "line:$index") pageFocus else null,
                     onClick = {},
+                    onFocused = { onAnchor("line:$index") },
                 )
             }
         }
@@ -854,6 +898,9 @@ private fun PreviewPage(
     backup: BackupStore.StoredBackup?,
     review: BackupPreview.Review?,
     leftFocus: FocusRequester,
+    pageFocus: FocusRequester,
+    anchor: String,
+    onAnchor: (String) -> Unit,
     onEnterDetails: () -> Unit,
     requester: (String) -> FocusRequester,
     scroll: ScrollState,
@@ -888,9 +935,11 @@ private fun PreviewPage(
                         down = if (index == review.items.lastIndex) requester("cancel") else requester("change:${index + 1}"),
                         focus = requester("change:$index"),
                         onEnterDetails = onEnterDetails,
+                        also = if (anchor == "change:$index") pageFocus else null,
                         mark = kindMark(item.kind),
                         markColor = kindColor(item.kind),
                         onClick = { if (item.more.isNotEmpty()) onMore(item.title, item.more, "change:$index") },
+                        onFocused = { onAnchor("change:$index") },
                     )
                 }
             }
@@ -905,9 +954,11 @@ private fun PreviewPage(
                 down = null,
                 focus = requester("cancel"),
                 onEnterDetails = onEnterDetails,
+                also = if (anchor == "cancel") pageFocus else null,
                 modifier = Modifier.weight(1f),
                 right = requester("restore"),
                 onClick = onCancel,
+                onFocused = { onAnchor("cancel") },
             )
             ActionRow(
                 title = "Geri yükle",
@@ -918,8 +969,10 @@ private fun PreviewPage(
                 down = null,
                 focus = requester("restore"),
                 onEnterDetails = onEnterDetails,
+                also = if (anchor == "restore") pageFocus else null,
                 modifier = Modifier.weight(1f),
                 onClick = onRestore,
+                onFocused = { onAnchor("restore") },
             )
         }
     }

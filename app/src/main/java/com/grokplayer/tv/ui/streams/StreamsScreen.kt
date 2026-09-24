@@ -112,6 +112,7 @@ fun StreamsScreen(
     playlists: com.grokplayer.tv.data.PlaylistStore? = null,
     collections: com.grokplayer.tv.data.CollectionStore? = null,
     watch: com.grokplayer.tv.data.WatchStore? = null,
+    watchlist: com.grokplayer.tv.data.WatchlistStore? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -434,6 +435,7 @@ fun StreamsScreen(
                 collections = collections,
                 onNotice = onNotice,
                 watch = watch,
+                watchlist = watchlist,
                 showAddToList = item.kind == StreamKind.Vod,
                 onDismiss = {
                     optionsFor = null

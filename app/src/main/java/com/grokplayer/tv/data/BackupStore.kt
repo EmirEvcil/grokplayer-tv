@@ -51,7 +51,11 @@ class BackupStore(context: Context) {
 
     fun restore(backup: StoredBackup) {
         val root = DownloadPaths.dir(app).absolutePath
-        BackupArchive.readSections(backup.file).forEach { section ->
+        val sections = BackupArchive.readSections(backup.file)
+        restoredPrefsToClear(sections.map { it.id }.toSet()).forEach { name ->
+            app.getSharedPreferences(name, Context.MODE_PRIVATE).edit().clear().commit()
+        }
+        sections.forEach { section ->
             val body = remapPaths(section.body, root)
             if (section.id == "watch") {
                 File(app.filesDir, "watch.json").writeText(body)
@@ -153,10 +157,14 @@ class BackupStore(context: Context) {
             "shared_folders" to "Klasörler",
             "downloads" to "İndirme kayıtları",
             "library" to "Kitaplık",
+            "watchlist" to "İzleme listesi",
             "grok_link" to "Eşleşmiş cihaz",
         )
     }
 }
+
+internal fun restoredPrefsToClear(presentIds: Set<String>): Set<String> =
+    setOf("watchlist").filter { it !in presentIds }.toSet()
 
 internal object PreferenceCodec {
     private const val TYPES = "_types"

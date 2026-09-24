@@ -51,6 +51,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -93,6 +98,7 @@ fun VideosScreen(
     remote: RemoteState? = null,
     playlists: com.grokplayer.tv.data.PlaylistStore? = null,
     collections: com.grokplayer.tv.data.CollectionStore? = null,
+    watchlist: com.grokplayer.tv.data.WatchlistStore? = null,
     onNotice: (String) -> Unit = {},
     onPurgeDownload: (LibraryVideo) -> Unit = {},
     focusVideoId: String? = null,
@@ -410,6 +416,7 @@ fun VideosScreen(
             } else {
                 BoxWithConstraints(Modifier.weight(1f)) {
                     val tileReserve = (maxWidth - 14.dp * 2) / 3 * 9f / 16f + 52.dp
+                    val lastRow = if (videos.isEmpty()) 0 else ((videos.size - 1) / 3) * 3
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(3),
                         state = gridState,
@@ -437,9 +444,15 @@ fun VideosScreen(
                                         restoreVideoId = video.id
                                     }
                                 }
+                                .onPreviewKeyEvent { event ->
+                                    event.type == KeyEventType.KeyDown &&
+                                        event.key == Key.DirectionDown &&
+                                        index >= lastRow
+                                }
                                 .focusProperties {
                                     left = if (index % 3 == 0) railFocus else FocusRequester.Default
                                     up = if (index < 3) filterFocus[0] else FocusRequester.Default
+                                    down = if (index >= lastRow) FocusRequester.Cancel else FocusRequester.Default
                                 },
                             onClick = {
                                 savedScrollIndex = gridState.firstVisibleItemIndex
@@ -507,6 +520,7 @@ fun VideosScreen(
                 collections = collections,
                 onNotice = onNotice,
                 watch = library.watch,
+                watchlist = watchlist,
                 onDismiss = { closeOverlays() },
                 extraActions = buildList {
                     add(

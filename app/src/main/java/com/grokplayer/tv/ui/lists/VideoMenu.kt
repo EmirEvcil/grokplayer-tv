@@ -45,6 +45,7 @@ import com.grokplayer.tv.data.PlaylistStore
 import com.grokplayer.tv.data.WatchFeedback
 import com.grokplayer.tv.data.WatchStatus
 import com.grokplayer.tv.data.WatchStore
+import com.grokplayer.tv.data.WatchlistStore
 import com.grokplayer.tv.data.isVod
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -52,6 +53,8 @@ import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.BookmarkAdd
+import androidx.compose.material.icons.outlined.BookmarkRemove
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Folder
@@ -97,6 +100,7 @@ fun VideoMenuHost(
     onMoveTo: (String) -> Unit = {},
     onCreateAndMove: (String) -> Unit = {},
     watch: WatchStore? = null,
+    watchlist: WatchlistStore? = null,
 ) {
     var stack by remember(video.id) { mutableStateOf(listOf(VideoMenuPage.Root)) }
     var targetPlaylist by remember(video.id) { mutableStateOf<FolderPlaylist?>(null) }
@@ -189,6 +193,21 @@ fun VideoMenuHost(
                 }
                 if (moveTargets != null) {
                     add(ModalAction("Koleksiyona taşı", id = "move", icon = Icons.AutoMirrored.Outlined.DriveFileMove) { push(VideoMenuPage.PickCollection) })
+                }
+                if (watchlist != null && video.isVod()) {
+                    val saved = watchlist.contains(video)
+                    add(
+                        if (saved) {
+                            ModalAction(stringResource(R.string.watchlist_remove), id = "watchlist", icon = Icons.Outlined.BookmarkRemove) {
+                                watchlist.remove(video)
+                                onNotice(context.getString(R.string.watchlist_removed))
+                            }
+                        } else {
+                            ModalAction(stringResource(R.string.watchlist_add), id = "watchlist", icon = Icons.Outlined.BookmarkAdd) {
+                                if (watchlist.add(video)) onNotice(context.getString(R.string.watchlist_added))
+                            }
+                        },
+                    )
                 }
                 if (watch != null && video.isVod()) {
                     val status = watch.status(video)

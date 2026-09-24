@@ -131,6 +131,7 @@ fun ListelerScreen(
     localVideos: List<LibraryVideo> = emptyList(),
     onPlay: (List<LibraryVideo>, Int, Boolean, Boolean, String?) -> Unit,
     watch: WatchStore,
+    watchlist: com.grokplayer.tv.data.WatchlistStore? = null,
     onNotice: (String) -> Unit,
     playerOpen: Boolean = false,
     modifier: Modifier = Modifier,
@@ -815,6 +816,7 @@ fun ListelerScreen(
                 },
                 onDismiss = { videoMenu = null },
                 watch = watch,
+                watchlist = watchlist,
                 extraActions = buildList {
                     add(
                         ModalAction("Oynat", icon = Icons.Filled.PlayArrow) {

@@ -62,6 +62,7 @@ fun VideoPoster(
     durationMs: Long = 0L,
     isLive: Boolean = false,
     enablePreview: Boolean = false,
+    previewWithoutFocus: Boolean = false,
     originUrl: String? = null,
     referer: String? = null,
     userAgent: String? = null,
@@ -124,10 +125,10 @@ fun VideoPoster(
         duration = withContext(Dispatchers.IO) { MediaProbe.durationMs(context, uri, path) }
     }
 
-    LaunchedEffect(focused, enablePreview, cacheKey) {
+    LaunchedEffect(focused, enablePreview, previewWithoutFocus, cacheKey) {
         preview = false
-        if (!focused || !enablePreview) return@LaunchedEffect
-        delay(500)
+        if (!enablePreview || (!focused && !previewWithoutFocus)) return@LaunchedEffect
+        delay(if (previewWithoutFocus) 800 else 500)
         preview = true
     }
 

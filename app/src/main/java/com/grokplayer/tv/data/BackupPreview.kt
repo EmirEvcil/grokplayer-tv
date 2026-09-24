@@ -58,6 +58,7 @@ object BackupPreview {
         val streams: Int,
         val watches: Int,
         val likes: Int,
+        val watchlist: Int = 0,
     )
 
     data class Catalog(
@@ -97,6 +98,7 @@ object BackupPreview {
             streams = records.count { it.id.startsWith("stream:") },
             watches = records.count { it.id.startsWith("watch:") },
             likes = records.count { it.id.startsWith("watch:") && (it.detail.contains("beğenildi") || it.detail.contains("beğenilmedi")) },
+            watchlist = records.count { it.id.startsWith("watchlist:") },
         )
     }
 
@@ -105,6 +107,7 @@ object BackupPreview {
         if (summary.playlists > 0) parts += countLabel(summary.playlists, "liste", "liste")
         if (summary.collections > 0) parts += countLabel(summary.collections, "koleksiyon", "koleksiyon")
         if (summary.downloads > 0) parts += countLabel(summary.downloads, "indirme", "indirme")
+        if (summary.watchlist > 0) parts += countLabel(summary.watchlist, "izlenecek", "izlenecek")
         return parts.joinToString(" · ")
     }
 
@@ -120,6 +123,10 @@ object BackupPreview {
         out += catalogOf("playlists", "Listeler", records.filter { it.id.startsWith("list:") })
         out += catalogOf("collections", "Koleksiyonlar", records.filter { it.group == "Koleksiyon" })
         out += catalogOf("downloads", "İndirmeler", records.filter { it.id.startsWith("download:") })
+        val watchlistRows = records.filter { it.id.startsWith("watchlist:") }
+        if (sections.any { it.id == "watchlist" } || watchlistRows.isNotEmpty()) {
+            out += catalogOf("watchlist", "İzleme listesi", watchlistRows)
+        }
         out += catalogOf("streams", "Yayınlar", records.filter { it.id.startsWith("stream:") })
         val watchRows = records.filter { it.id.startsWith("watch:") || it.id.startsWith("cursor:") || it.id.startsWith("opened:") || it.id.startsWith("recent:") }
         out += catalogOf("watch", "İzleme ve beğeniler", watchRows)
@@ -194,15 +201,15 @@ object BackupPreview {
         if (old == null || new == null) return emptyList()
         val out = ArrayList<Built>()
         if (old.name != new.name) {
-            out += Built(new.group, "Değişecek", new.name, "ad: ${old.name} → ${new.name}")
+            out += Built(new.group, "Değişecek", new.name, join(place(new), "ad: ${old.name} → ${new.name}"))
         }
         if (old.extra != new.extra && (old.extra.isNotBlank() || new.extra.isNotBlank())) {
-            out += Built(new.group, "Değişecek", new.name, "${old.extra.ifBlank { "yok" }} → ${new.extra.ifBlank { "yok" }}")
+            out += Built(new.group, "Değişecek", new.name, join(place(new), "${old.extra.ifBlank { "yok" }} → ${new.extra.ifBlank { "yok" }}"))
         }
         if (old.facts.isNotEmpty() || new.facts.isNotEmpty()) {
             out += factBuilt(old, new)
         } else if (old.detail != new.detail) {
-            out += Built(new.group, "Değişecek", new.name, "${old.detail} → ${new.detail}")
+            out += Built(new.group, "Değişecek", new.name, join(place(new), "${old.detail} → ${new.detail}"))
         }
         return out
     }
@@ -213,7 +220,7 @@ object BackupPreview {
             group = record.group,
             kind = kind,
             title = record.name,
-            detail = join(word, record.detail, names),
+            detail = join(place(record), word, record.detail, names),
             more = if (record.facts.size >= 2) record.facts.map { Line(it.label, "") } else emptyList(),
             collapsible = record.group != "Oynatma",
         )
@@ -229,10 +236,10 @@ object BackupPreview {
             val before = left[id]
             val after = right[id]
             when {
-                before == null && after != null -> added += Line(after.label, new.name)
-                before != null && after == null -> removed += Line(before.label, old.name)
+                before == null && after != null -> added += Line(after.label, join(place(new), new.name))
+                before != null && after == null -> removed += Line(before.label, join(place(old), old.name))
                 before != null && after != null && before.label != after.label ->
-                    changed += Line(after.label, "${before.label} → ${after.label}")
+                    changed += Line(after.label, join(place(new), "${before.label} → ${after.label}"))
             }
         }
         val out = ArrayList<Built>()
@@ -243,7 +250,8 @@ object BackupPreview {
     }
 
     private fun factRow(record: Record, kind: String, word: String, lines: List<Line>): Built {
-        val detail = if (lines.size == 1) "${lines[0].title} $word" else "${lines.size} video $word"
+        val what = if (lines.size == 1) "${lines[0].title} $word" else "${lines.size} video $word"
+        val detail = join(place(record), what)
         return Built(
             group = record.group,
             kind = kind,
@@ -283,10 +291,20 @@ object BackupPreview {
         "İndirme" -> "indirme"
         "Yayın" -> "yayın"
         "İzleme" -> "izleme kaydı"
+        "İzleme listesi" -> "izlenecek"
         "Klasör" -> "klasör"
         "Cihaz" -> "cihaz"
         "Kitaplık", "Son açılan" -> "kayıt"
         else -> "kayıt"
+    }
+
+    private fun place(record: Record): String {
+        val note = record.note.trim()
+        return if (note.isNotEmpty() && !note.equals(record.name, ignoreCase = true)) {
+            "${record.group} · $note"
+        } else {
+            record.group
+        }
     }
 
     private fun kindWord(kind: String): String = when (kind) {
@@ -366,6 +384,7 @@ object BackupPreview {
             "watch" -> watches(root, titles, readLists(siblings))
             "grok_link" -> devices(root)
             "library" -> library(root, titles, forDiff)
+            "watchlist" -> watchlist(root)
             else -> emptyList()
         }
     }
@@ -656,6 +675,26 @@ object BackupPreview {
             DownloadPolicy.normalizeUrl(url)
         } else {
             clip.path.replace('\\', '/').lowercase().ifBlank { clip.id }
+        }
+    }
+
+    private fun watchlist(root: JSONObject): List<Record> {
+        val items = jsonArray(root.opt("items")) ?: return emptyList()
+        return buildList {
+            for (index in 0 until items.length()) {
+                val item = items.optJSONObject(index) ?: continue
+                val id = item.optString("id")
+                if (id.isBlank()) continue
+                val duration = item.optLong("durationMs")
+                add(
+                    Record(
+                        id = "watchlist:$id",
+                        group = "İzleme listesi",
+                        name = item.optString("title").ifBlank { "Video" },
+                        detail = if (duration > 0L) duration.formatClock() else "",
+                    ),
+                )
+            }
         }
     }
 

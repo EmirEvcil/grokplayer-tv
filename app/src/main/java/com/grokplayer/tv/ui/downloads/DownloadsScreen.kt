@@ -63,6 +63,7 @@ fun DownloadsScreen(
     onPlay: (List<LibraryVideo>, Int) -> Unit,
     onRemoved: (DownloadItem) -> Unit = {},
     watch: com.grokplayer.tv.data.WatchStore? = null,
+    watchlist: com.grokplayer.tv.data.WatchlistStore? = null,
     modifier: Modifier = Modifier,
 ) {
     var optionsFor by remember { mutableStateOf<DownloadItem?>(null) }
@@ -178,6 +179,7 @@ fun DownloadsScreen(
                 meta = statusLabel(item),
                 showAddToList = false,
                 watch = watch,
+                watchlist = watchlist,
                 onDismiss = { closeOptions() },
                 extraActions = buildList {
                     if (item.status == DownloadStatus.Done) {

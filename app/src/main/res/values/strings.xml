@@ -1,6 +1,16 @@
 <resources>
     <string name="app_name">GrokPlayer</string>
     <string name="nav_home">Ana sayfa</string>
+    <string name="nav_watchlist">İzlenecek</string>
+    <string name="watchlist_title">İzleme listesi</string>
+    <string name="watchlist_add">İzleme listesine ekle</string>
+    <string name="watchlist_remove">İzleme listesinden çıkar</string>
+    <string name="watchlist_added">İzleme listesine eklendi</string>
+    <string name="watchlist_removed">İzleme listesinden çıkarıldı</string>
+    <string name="watchlist_empty_title">İzleme listen boş</string>
+    <string name="watchlist_empty_body">Bir videonun seçeneklerinden İzleme listesine ekle. Canlı yayınlar eklenmez.</string>
+    <string name="watchlist_watching">İzleniyor</string>
+    <string name="watchlist_watched">İzlendi</string>
     <string name="nav_videos">Videolar</string>
     <string name="nav_lists">Listeler</string>
     <string name="nav_streams">Akışlar</string>

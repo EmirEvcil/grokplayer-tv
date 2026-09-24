@@ -58,6 +58,7 @@ fun RemoteFolderScreen(
     onAddPlaylist: (path: String, title: String) -> Unit = { _, _ -> },
     onClose: () -> Unit,
     watch: com.grokplayer.tv.data.WatchStore? = null,
+    watchlist: com.grokplayer.tv.data.WatchlistStore? = null,
     interactive: Boolean = true,
 ) {
     val scope = rememberCoroutineScope()
@@ -199,6 +200,7 @@ fun RemoteFolderScreen(
                     meta = "PC’den VOD",
                     showAddToList = false,
                     watch = watch,
+                    watchlist = watchlist,
                     onDismiss = { optionsFor = null },
                     extraActions = listOf(
                         com.grokplayer.tv.ui.components.ModalAction("Oynat", icon = Icons.Filled.PlayArrow) {

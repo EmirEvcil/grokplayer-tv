@@ -11,8 +11,21 @@ Current build: **0.2.70** (versionCode 72, `com.grokplayer.tv`, minSdk 24, targe
 ### Home
 - Continue-watching hero from in-progress VOD
 - **Devam et** resumes without asking; **Baştan oynat** starts at 0
-- Recently opened row with progress bars
+- Recently opened row with progress bars. Hold OK on a card for the same video options as the other pages, including the watchlist
 - Empty state until a local file, USB, or stream is opened
+- When the watchlist has videos, **İzlemeye devam** and **İzleme listesi** switch the page. Opening Home always starts on continue watching. The watchlist uses the same layout: the focused video fills the background (its thumbnail, then a preview if you wait), with the title and duration above **Devam et** / **Baştan oynat**. Four posters stay along the bottom and move left and right
+
+### İzleme listesi
+A personal list for videos to watch later. It is not a playlist.
+
+- Sidebar item **İzlenecek**
+- Hold OK on a video in Videolar, Akışlar, İndirilenler, Listeler, PC folders, Home, or the watchlist itself: **İzleme listesine ekle**, or **İzleme listesinden çıkar** when it is already there
+- Live streams are not offered and cannot be stored
+- The same video is stored once, including when it also exists as a download or a stream
+- Watching does not remove it. Remove it from the options menu
+- The page is a three-across grid, like Videolar: title, duration, progress, and a play preview on the focused card
+- Down on the last row stays on that row
+- Included in backups as **İzleme listesi**. Merging keeps videos from every backup and uses the newer copy when the same video is in more than one. Restoring an older backup that has no watchlist removes the current one, which is what the restore preview shows
 
 ### Videolar
 - Scans internal storage and USB
@@ -21,7 +34,7 @@ Current build: **0.2.70** (versionCode 72, `com.grokplayer.tv`, minSdk 24, targe
 - Sort: recently added, oldest, A–Z, newest, episode order
 - Search across videos, streams, and settings
 - Card thumbnails, hover preview, duration, progress bar
-- Hold OK for options: play, details, add to playlist/collection, mark watched, like/dislike, send to PC (rows have icons)
+- Hold OK for options: play, details, add to playlist/collection, add to or remove from the watchlist, mark watched, like/dislike, send to PC (rows have icons)
 
 ### Listeler
 - **Playlists:** custom lists on the TV, plus PC shared folders when a PC is paired
@@ -52,7 +65,7 @@ Current build: **0.2.70** (versionCode 72, `com.grokplayer.tv`, minSdk 24, targe
 - Live vs VOD from the item (`item.isLive`), including YouTube `/live/` and simulcast-style URLs
 - Live badge from the item, not the format string
 - Sample catalog is seeded once; deleting a stream does not bring it back
-- Hold OK to play, download (VOD), add to a list, favorite, or send to PC
+- Hold OK to play, download (VOD), add to a list or the watchlist, favorite, or send to PC. Live items have no watchlist action
 - Progress on VOD tiles only
 
 ### İndirilenler
@@ -82,15 +95,16 @@ Current build: **0.2.70** (versionCode 72, `com.grokplayer.tv`, minSdk 24, targe
 Settings → Yedekler. Named compressed `.gpb` archives of settings, lists, collections, streams, folders, download records, paired devices, and watch history (including likes). Video files are not included.
 
 - **Yedek oluştur** and **Birleştir** sit side by side
-- Backups are grouped as Bugün, Dün, or a `d/M/yyyy` date. A row shows the name, size, and a short count such as `2 liste · 12 koleksiyon · 1 indirme`
-- OK opens that backup: category counts (Ayarlar, Listeler, Koleksiyonlar, İndirmeler, Yayınlar, İzleme ve beğeniler, plus Klasörler or Cihazlar when the backup has them), then the items in the category. A list or collection opens its videos
+- Backups are grouped as Bugün, Dün, or a `d/M/yyyy` date. A row shows the name, size, and a short count such as `2 liste · 12 koleksiyon · 1 indirme · 3 izlenecek`
+- OK opens that backup: category counts (Ayarlar, Listeler, Koleksiyonlar, İndirmeler, İzleme listesi, Yayınlar, İzleme ve beğeniler, plus Klasörler or Cihazlar when the backup has them), then the items in the category. A list or collection opens its videos
 - Offline collections are included. They are built from finished downloads and, in new backups, from a snapshot of local videos
-- **Geri yüklemeyi incele** compares the backup with this device and shows `N eklenecek · N değişecek · N silinecek`. Rows are marked + / − / →. A grouped row opens the lists or collections, and those open the video names that will be added or removed. Playback changes (speed, resume, and the other settings) stay as single rows
+- **Geri yüklemeyi incele** compares the backup with this device and shows `N eklenecek · N değişecek · N silinecek`. Rows are marked + / − / → and name where the change applies (a list, a collection, the watchlist, a download, a stream, or a setting). A grouped row opens those places, and those open the video names. Playback changes (speed, resume, and the other settings) stay as single rows. Right from the Yedekler category returns to the row you left
 - **Vazgeç** and **Geri yükle** stay at the bottom. Restore applies the backup, remaps download paths onto this device, and restarts the app. It does not delete video files. If nothing in the records differs, the preview says so
 - **Sil** asks for confirmation. Vazgeç starts focused
 - **Birleştir**: OK checks or unchecks a backup, and the header shows how many are selected. **Devam et** needs at least two. The next page merges oldest to newest: the newer value wins on the same record, list and collection memberships are combined, and the newer watch record (including the like) is kept. Records that exist in only one backup are kept. Name the result and **Kaydet**
 - Back moves up one level and returns to the previous row and scroll position. Hold OK is not used on this page
 - Archives are written to `Movies/GrokPlayer/backups` when shared storage is available. Otherwise the page offers **Paylaşılan depoya izin ver**, and a backup deleted with the app is gone
+- The watchlist is part of the archive. Merge keeps a video that exists in any selected backup. Restore writes the backup’s watchlist, or clears the current one when that backup has none. Video files are not copied or deleted
 
 ### Cihazlar (LAN)
 - Pair with GrokPlayer on the PC (`10.0.2.2` from the emulator)
@@ -112,9 +126,10 @@ Settings → Yedekler. Named compressed `.gpb` archives of settings, lists, coll
 
 ### Remote and focus
 - D-pad 10-foot navigation
-- OK plays; hold OK opens options on videos, streams, lists, and downloads in one sheet (details / add / mark — Back returns to the previous page, no stacked modals). Yedekler uses OK only
+- OK plays; hold OK opens options on videos, streams, lists, downloads, and the watchlist in one sheet (details / add / mark — Back returns to the previous page, no stacked modals). Yedekler uses OK only
 - IME: first Back hides the keyboard, later Back leaves the name page
 - Last focused row restored after overlays, and when leaving a backup page
+- Down on the last row of Videolar and İzlenecek stays on that row. Left from the home watchlist returns to Ana sayfa; Right comes back to the poster you left
 
 ## Requirements
 

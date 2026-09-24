@@ -86,6 +86,7 @@ import com.grokplayer.tv.ui.Destination
 import com.grokplayer.tv.ui.player.PlayerScreen
 import com.grokplayer.tv.ui.downloads.DownloadsScreen
 import com.grokplayer.tv.ui.home.HomeScreen
+import com.grokplayer.tv.ui.watchlist.WatchlistScreen
 import com.grokplayer.tv.ui.settings.SettingsCategory
 import com.grokplayer.tv.ui.settings.SettingsScreen
 import com.grokplayer.tv.ui.lists.ListelerScreen
@@ -123,6 +124,7 @@ fun TvShell() {
     val playlists = remember { PlaylistStore(context) }
     val collections = remember { CollectionStore(context) }
     val downloads = remember { DownloadStore(context, settings) }
+    val watchlist = remember { com.grokplayer.tv.data.WatchlistStore(context) }
     LaunchedEffect(downloads.items) {
         library.bindDownloadTitles { path -> downloads.titleForPath(path) }
         library.mergeDownloads(
@@ -174,6 +176,7 @@ fun TvShell() {
     var focusVideoId by remember { mutableStateOf<String?>(null) }
     var focusStreamId by remember { mutableStateOf<String?>(null) }
     var focusHomeId by remember { mutableStateOf<String?>(null) }
+    var focusWatchId by remember { mutableStateOf<String?>(null) }
     var focusSettingKey by remember { mutableStateOf<String?>(null) }
     var focusDeviceId by remember { mutableStateOf<String?>(null) }
     val focusLock = remember { com.grokplayer.tv.data.FocusLock() }
@@ -323,13 +326,38 @@ fun TvShell() {
                                 resumeFocus = focus,
                                 railFocus = rail,
                                 library = library,
+                                watchlist = watchlist,
+                                known = library.videos + streams.items.map { it.toVideo() },
+                                playlists = playlists,
+                                collections = collections,
                                 onPlay = { queue, index, resume, ask ->
                                     resumePlayback = resume
                                     promptResume = ask
                                     session = PlaySession(queue, index)
                                 },
+                                onNotice = { notice = it },
+                                playerOpen = session != null,
                                 focusItemId = focusHomeId,
                                 onFocusConsumed = { focusHomeId = null },
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                            Destination.Watchlist -> WatchlistScreen(
+                                firstFocus = focus,
+                                railFocus = rail,
+                                library = library,
+                                watchlist = watchlist,
+                                known = library.videos + streams.items.map { it.toVideo() },
+                                playlists = playlists,
+                                collections = collections,
+                                onPlay = { queue, index, resume, ask ->
+                                    resumePlayback = resume
+                                    promptResume = ask
+                                    session = PlaySession(queue, index)
+                                },
+                                onNotice = { notice = it },
+                                playbackOpen = session != null,
+                                focusItemId = focusWatchId,
+                                onFocusConsumed = { focusWatchId = null },
                                 modifier = Modifier.fillMaxSize(),
                             )
                             Destination.Lists -> ListelerScreen(
@@ -342,6 +370,7 @@ fun TvShell() {
                                 localVideos = library.videos,
                                 playerOpen = session != null,
                                 watch = library.watch,
+                                watchlist = watchlist,
                                 onPlay = { queue, index, resume, ask, listId ->
                                     resumePlayback = resume
                                     promptResume = ask
@@ -364,6 +393,7 @@ fun TvShell() {
                                 remote = linkUi.remote,
                                 playlists = playlists,
                                 collections = collections,
+                                watchlist = watchlist,
                                 onNotice = { notice = it },
                                 onPurgeDownload = { video ->
                                     val id = video.id.removePrefix("download:")
@@ -396,6 +426,7 @@ fun TvShell() {
                                 playlists = playlists,
                                 collections = collections,
                                 watch = library.watch,
+                                watchlist = watchlist,
                                 modifier = Modifier.fillMaxSize(),
                             )
                             Destination.Downloads -> DownloadsScreen(
@@ -403,6 +434,7 @@ fun TvShell() {
                                 railFocus = rail,
                                 downloads = downloads,
                                 watch = library.watch,
+                                watchlist = watchlist,
                                 onPlay = { queue, index ->
                                     resumePlayback = true
                                     promptResume = true
@@ -602,6 +634,7 @@ fun TvShell() {
                         session = PlaySession(queue, index)
                     },
                     watch = library.watch,
+                    watchlist = watchlist,
                     interactive = playing == null,
                     onDownload = { videos ->
                         videos.forEach { video ->
@@ -655,6 +688,7 @@ fun TvShell() {
                             Destination.Videos -> focusVideoId = lastId
                             Destination.Streams -> focusStreamId = lastId
                             Destination.Home -> focusHomeId = lastId
+                            Destination.Watchlist -> focusWatchId = lastId
                             else -> Unit
                         }
                     },
