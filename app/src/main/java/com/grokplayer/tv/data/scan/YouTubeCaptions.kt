@@ -225,7 +225,10 @@ object YouTubeCaptions {
             val gap = next.startMs - buf.endMs
             val chars = captionChars(buf) + 1 + captionChars(next)
             val span = next.endMs.coerceAtLeast(next.startMs) - buf.startMs
-            if (gap <= 400L && chars <= maxChars && span <= maxSpan) {
+            if (gap < 0L) {
+                parts += buf.copy(endMs = next.startMs.coerceAtLeast(buf.startMs))
+                buf = next
+            } else if (gap <= 400L && chars <= maxChars && span <= maxSpan) {
                 buf = YtCaptionLine(buf.startMs, maxOf(buf.endMs, next.endMs), buf.words + next.words)
             } else {
                 parts += buf
@@ -237,7 +240,7 @@ object YouTubeCaptions {
             val nextStart = parts.getOrNull(index + 1)?.startMs
             val want = maxOf(line.endMs, line.startMs + minHold)
             val end = if (nextStart == null) want else minOf(want, nextStart)
-            line.copy(endMs = maxOf(line.endMs, end))
+            line.copy(endMs = if (nextStart == null) end else minOf(end, nextStart))
         }
     }
 
@@ -246,11 +249,8 @@ object YouTubeCaptions {
 
     fun visibleLines(lines: List<YtCaptionLine>, positionMs: Long): List<YtCaptionLine> {
         if (lines.isEmpty()) return emptyList()
-        val active = lines.filter { positionMs >= it.startMs && positionMs < it.endMs + 900L }
-        if (active.isNotEmpty()) return if (active.size <= 2) active else active.takeLast(2)
-        return listOfNotNull(
-            lines.lastOrNull { positionMs >= it.startMs && positionMs < it.startMs + 2_600L },
-        )
+        val active = lines.filter { positionMs >= it.startMs && positionMs < it.endMs }
+        return listOfNotNull(active.maxByOrNull { it.startMs })
     }
 
     fun hydrate(

@@ -271,6 +271,9 @@ fun FocusableAction(
         longAt = now
         longFired = true
         suppressClick = true
+        // The page this opens focuses a new row before KeyUp. Arm the gate
+        // so that release cannot click the newly focused action.
+        com.grokplayer.tv.data.KeyGate.arm()
         onLongClick?.invoke()
     }
     Row(
@@ -286,6 +289,18 @@ fun FocusableAction(
             .clip(shape)
             .onPreviewKeyEvent { event ->
                 val center = event.key == Key.DirectionCenter || event.key == Key.Enter
+                if (onLongClick != null && center && event.type == KeyEventType.KeyUp) {
+                    val wasLong = longFired || suppressClick
+                    val click = com.grokplayer.tv.data.HoldOk.clickOnUp(longFired, suppressClick)
+                    cancelHold()
+                    longFired = false
+                    suppressClick = false
+                    if (click) onClick()
+                    // This row consumed the release, so the gate armed by the
+                    // long press must not swallow the next OK.
+                    if (wasLong) com.grokplayer.tv.data.KeyGate.reset()
+                    return@onPreviewKeyEvent true
+                }
                 if (center && com.grokplayer.tv.data.KeyGate.onOk(
                         down = event.type == KeyEventType.KeyDown,
                         up = event.type == KeyEventType.KeyUp,
@@ -320,14 +335,6 @@ fun FocusableAction(
                         ) {
                             fireLong()
                         }
-                        true
-                    }
-                    KeyEventType.KeyUp -> {
-                        val click = com.grokplayer.tv.data.HoldOk.clickOnUp(longFired, suppressClick)
-                        cancelHold()
-                        longFired = false
-                        suppressClick = false
-                        if (click) onClick()
                         true
                     }
                     else -> false

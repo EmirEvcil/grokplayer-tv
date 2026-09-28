@@ -101,6 +101,8 @@ fun VideoMenuHost(
     onCreateAndMove: (String) -> Unit = {},
     watch: WatchStore? = null,
     watchlist: WatchlistStore? = null,
+    queue: com.grokplayer.tv.data.PlaybackQueue? = null,
+    nowPlayingId: String? = null,
 ) {
     var stack by remember(video.id) { mutableStateOf(listOf(VideoMenuPage.Root)) }
     var targetPlaylist by remember(video.id) { mutableStateOf<FolderPlaylist?>(null) }
@@ -115,6 +117,8 @@ fun VideoMenuHost(
     val keyboard = LocalSoftwareKeyboardController.current
     val view = LocalView.current
     val context = LocalContext.current
+    val activeQueue = queue ?: com.grokplayer.tv.data.LocalPlaybackQueue.current
+    val playingId = nowPlayingId ?: activeQueue?.current()?.id
     var hidIme by remember(page) { mutableStateOf(false) }
     var imeWasOpen by remember(page) { mutableStateOf(naming) }
     LaunchedEffect(imeVisible, page) {
@@ -193,6 +197,15 @@ fun VideoMenuHost(
                 }
                 if (moveTargets != null) {
                     add(ModalAction("Koleksiyona taşı", id = "move", icon = Icons.AutoMirrored.Outlined.DriveFileMove) { push(VideoMenuPage.PickCollection) })
+                }
+                if (activeQueue != null && video.isVod()) {
+                    add(ModalAction("Sonra oynat", id = "play-next", icon = Icons.AutoMirrored.Outlined.PlaylistAdd) {
+                        if (activeQueue.addNext(video, playingId)) onNotice("Sıradaki video olarak eklendi")
+                    })
+                    add(ModalAction("Sıraya ekle", id = "queue-add", icon = Icons.Outlined.Add) {
+                        if (activeQueue.addLast(video)) onNotice("Sıranın sonuna eklendi")
+                        else onNotice("Bu video zaten sırada")
+                    })
                 }
                 if (watchlist != null && video.isVod()) {
                     val saved = watchlist.contains(video)

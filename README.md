@@ -32,7 +32,7 @@ A personal list for videos to watch later. It is not a playlist.
 - Add extra folders from internal or USB
 - Filters: all, internal, USB
 - Sort: recently added, oldest, A–Z, newest, episode order
-- Search across videos, streams, and settings
+- Search across videos, streams, and settings. The first Back hides the keyboard so the results can be focused. Cards show a thumbnail, duration, and a preview, plus whether the video is on the device or online and if it is watched. Filters at the bottom are source (Tümü / Cihazda / Çevrimiçi) and watch status (Tümü / İzlendi / İzleniyor / İzlenmedi). Opening a result plays it; Back returns to the same search
 - Card thumbnails, hover preview, duration, progress bar
 - Hold OK for options: play, details, add to playlist/collection, add to or remove from the watchlist, mark watched, like/dislike, send to PC (rows have icons)
 
@@ -46,6 +46,11 @@ A personal list for videos to watch later. It is not a playlist.
 - Last-watched resume bar on a playlist or collection (**Devam et** auto-resumes; card/menu play still asks)
 - Watched-episode counts on collection cards
 - Progress bars on video tiles (same as Videolar)
+
+### Mini player and queue
+- **Küçük oynatıcı** in Oynatma settings. While a video is playing, Back shrinks it to the bottom right and playback continues, including subtitles. A paused video closes instead. The card shows previous, play/pause, and next while focused, plus fullscreen and close. Close pauses and dismisses. Fullscreen returns to the player at the same position. Pausing from the card does not dismiss it. The setting off means Back always leaves the player
+- One queue for every VOD. Hold OK: **Sonra oynat** inserts after the current video, **Sıraya ekle** appends. Live streams are not queued. The player list switches between **Liste** (the list playback started from, in that order) and **Sıra**. Removing or clearing only changes the queue. Clearing drops every queued entry, including the current one, and the video keeps playing
+- Leaving the app with the TV Home button does not keep this card on the launcher. Android TV only allows picture-in-picture for calls and a few system categories, not ordinary video playback, and not on TV versions before Android 14
 
 ### Watch tracking
 - Shared VOD state: unwatched / watching / watched, stored in `filesDir/watch.json`

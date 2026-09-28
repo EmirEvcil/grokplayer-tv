@@ -386,6 +386,7 @@ fun BackupSection(
                     anchor = "cancel"
                     screen = BackupScreen.Preview(current.path)
                     pendingFocus = "cancel"
+                    scope.launch { scrollOf("preview:${current.path}").scrollTo(0) }
                 },
                 onDelete = { confirmDelete = true },
             )
@@ -931,7 +932,7 @@ private fun PreviewPage(
                         subtitle = item.detail,
                         checked = null,
                         left = leftFocus,
-                        up = if (index == 0) null else requester("change:${index - 1}"),
+                        up = if (index == 0) requester("cancel") else requester("change:${index - 1}"),
                         down = if (index == review.items.lastIndex) requester("cancel") else requester("change:${index + 1}"),
                         focus = requester("change:$index"),
                         onEnterDetails = onEnterDetails,
@@ -950,7 +951,7 @@ private fun PreviewPage(
                 subtitle = null,
                 checked = null,
                 left = leftFocus,
-                up = review?.items?.lastIndex?.let { requester("change:$it") },
+                up = if (review?.items.isNullOrEmpty()) null else requester("change:0"),
                 down = null,
                 focus = requester("cancel"),
                 onEnterDetails = onEnterDetails,
@@ -965,7 +966,7 @@ private fun PreviewPage(
                 subtitle = "Yeniden başlar",
                 checked = null,
                 left = requester("cancel"),
-                up = review?.items?.lastIndex?.let { requester("change:$it") },
+                up = if (review?.items.isNullOrEmpty()) null else requester("change:0"),
                 down = null,
                 focus = requester("restore"),
                 onEnterDetails = onEnterDetails,

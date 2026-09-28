@@ -15,6 +15,8 @@ class PlaybackSettings(context: Context) {
         private set
     var autoNext by mutableStateOf(prefs.getBoolean("auto_next", true))
         private set
+    var miniPlayer by mutableStateOf(prefs.getBoolean("mini_player", true))
+        private set
     var seekStepSeconds by mutableIntStateOf(prefs.getInt("seek_step", 10))
         private set
     var defaultSpeed by mutableFloatStateOf(snapSpeed(readSpeed()))
@@ -54,6 +56,11 @@ class PlaybackSettings(context: Context) {
     fun toggleAutoNext() {
         autoNext = !autoNext
         prefs.edit().putBoolean("auto_next", autoNext).apply()
+    }
+
+    fun toggleMiniPlayer() {
+        miniPlayer = !miniPlayer
+        prefs.edit().putBoolean("mini_player", miniPlayer).apply()
     }
 
     fun cycleSeekStep() {

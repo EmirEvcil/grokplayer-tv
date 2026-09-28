@@ -114,6 +114,7 @@ fun SettingsScreen(
         mapOf(
             "resume" to FocusRequester(),
             "autonext" to FocusRequester(),
+            "mini" to FocusRequester(),
             "seek" to FocusRequester(),
             "speed" to FocusRequester(),
             "hide" to FocusRequester(),
@@ -302,6 +303,7 @@ private fun CategoryDetails(
         SettingsCategory.Playback -> {
             ToggleRow("Kaldığın yerden devam et", "Videoları bıraktığın noktadan aç.", settings.resumeEnabled, { settings.toggleResume() }, row("resume", true))
             ToggleRow("Sonraki videoyu otomatik oynat", "Bitmeden 10 saniye önce sıradakini gösterir ve liste sonunda durur.", settings.autoNext, { settings.toggleAutoNext() }, row("autonext"))
+            ToggleRow("Küçük oynatıcı", "Oynatma sürerken Geri, videoyu sağ altta açık bırakır. Duraklatılmış video kapanır.", settings.miniPlayer, { settings.toggleMiniPlayer() }, row("mini"))
             ValueRow("İleri / geri sarma adımı", settings.seekStepLabel, { settings.cycleSeekStep() }, row("seek"))
             ValueRow("Varsayılan oynatma hızı", settings.speedLabel, { settings.cycleSpeed() }, row("speed"))
             ValueRow("Kontrolleri gizleme süresi", settings.hideControlsLabel, { settings.cycleHideControls() }, row("hide"))

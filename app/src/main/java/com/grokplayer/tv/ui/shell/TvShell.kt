@@ -39,6 +39,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -65,6 +66,7 @@ import com.grokplayer.tv.R
 import com.grokplayer.tv.data.DownloadStore
 import com.grokplayer.tv.data.LibraryStore
 import com.grokplayer.tv.data.LibraryVideo
+import com.grokplayer.tv.data.isVod
 import com.grokplayer.tv.data.PlaySession
 import com.grokplayer.tv.data.PlaybackSettings
 import com.grokplayer.tv.data.CollectionStore
@@ -170,9 +172,17 @@ fun TvShell() {
     var notice by remember { mutableStateOf<String?>(null) }
     var lastSettingsCategory by rememberSaveable { mutableStateOf(SettingsCategory.Playback.name) }
     var session by remember { mutableStateOf<PlaySession?>(null) }
+    val playback = remember { com.grokplayer.tv.data.PlaybackQueue() }
+    var mini by remember { mutableStateOf(false) }
+    var playToken by remember { mutableIntStateOf(0) }
+    val miniFocus = remember { FocusRequester() }
     var resumePlayback by remember { mutableStateOf(true) }
     var promptResume by remember { mutableStateOf(false) }
     var searchOpen by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var searchSource by remember { mutableStateOf(com.grokplayer.tv.ui.search.SearchSource.All) }
+    var searchWatch by remember { mutableStateOf(com.grokplayer.tv.ui.search.SearchWatch.All) }
+    var searchFocusKey by remember { mutableStateOf<String?>(null) }
     var focusVideoId by remember { mutableStateOf<String?>(null) }
     var focusStreamId by remember { mutableStateOf<String?>(null) }
     var focusHomeId by remember { mutableStateOf<String?>(null) }
@@ -261,12 +271,26 @@ fun TvShell() {
         onDispose { AppBack.handler = null }
     }
 
+    fun openPlayer(videos: List<com.grokplayer.tv.data.LibraryVideo>, index: Int, listId: String? = null) {
+        val start = videos.getOrNull(index) ?: return
+        mini = false
+        playToken += 1
+        if (!start.isVod()) {
+            session = PlaySession(listOf(start), 0, listId)
+            return
+        }
+        val list = videos.filter { it.isVod() }.ifEmpty { listOf(start) }
+        val at = list.indexOfFirst { it.id == start.id }.coerceAtLeast(0)
+        session = PlaySession(list, at, listId)
+    }
+
     CompositionLocalProvider(
         LocalPlaceholderAction provides { title ->
             notice = "$title · oynatma yakında"
         },
         LocalFocusLock provides focusLock,
         LocalBackHub provides backHub,
+        com.grokplayer.tv.data.LocalPlaybackQueue provides playback,
     ) {
         Box(
             Modifier
@@ -289,7 +313,7 @@ fun TvShell() {
                 Modifier
                     .fillMaxSize()
                     .focusProperties {
-                        if (session != null || modalOpen) {
+                        if ((session != null && !mini) || modalOpen) {
                             canFocus = false
                             onEnter = { FocusRequester.Cancel }
                         }
@@ -298,7 +322,8 @@ fun TvShell() {
                 SideRail(
                     selected = destination,
                     navFocus = navFocus,
-                    locked = session != null,
+                    locked = (session != null && !mini) || searchOpen,
+                    miniFocus = if (mini) miniFocus else null,
                     onSelect = { destination = it },
                     onEnter = { dest ->
                         destination = dest
@@ -333,7 +358,7 @@ fun TvShell() {
                                 onPlay = { queue, index, resume, ask ->
                                     resumePlayback = resume
                                     promptResume = ask
-                                    session = PlaySession(queue, index)
+                                    openPlayer(queue, index)
                                 },
                                 onNotice = { notice = it },
                                 playerOpen = session != null,
@@ -352,7 +377,7 @@ fun TvShell() {
                                 onPlay = { queue, index, resume, ask ->
                                     resumePlayback = resume
                                     promptResume = ask
-                                    session = PlaySession(queue, index)
+                                    openPlayer(queue, index)
                                 },
                                 onNotice = { notice = it },
                                 playbackOpen = session != null,
@@ -368,13 +393,13 @@ fun TvShell() {
                                 collections = collections,
                                 downloads = downloads,
                                 localVideos = library.videos,
-                                playerOpen = session != null,
+                                playerOpen = session != null && !mini,
                                 watch = library.watch,
                                 watchlist = watchlist,
                                 onPlay = { queue, index, resume, ask, listId ->
                                     resumePlayback = resume
                                     promptResume = ask
-                                    session = PlaySession(queue, index, listId)
+                                    openPlayer(queue, index, listId)
                                 },
                                 onNotice = { notice = it },
                                 modifier = Modifier.fillMaxSize(),
@@ -386,7 +411,7 @@ fun TvShell() {
                                 onPlay = { queue, index, resume, ask ->
                                     resumePlayback = resume
                                     promptResume = ask
-                                    session = PlaySession(queue, index)
+                                    openPlayer(queue, index)
                                 },
                                 canSend = linkUi.paired.isNotEmpty(),
                                 onSend = { sendVideo = it },
@@ -414,7 +439,7 @@ fun TvShell() {
                                 onPlay = { queue, index ->
                                     resumePlayback = true
                                     promptResume = true
-                                    session = PlaySession(queue, index)
+                                    openPlayer(queue, index)
                                 },
                                 onNotice = { notice = it },
                                 canSend = linkUi.paired.isNotEmpty(),
@@ -438,7 +463,7 @@ fun TvShell() {
                                 onPlay = { queue, index ->
                                     resumePlayback = true
                                     promptResume = true
-                                    session = PlaySession(queue, index)
+                                    openPlayer(queue, index)
                                 },
                                 onRemoved = { item ->
                                     library.forget("download:${item.id}")
@@ -470,7 +495,7 @@ fun TvShell() {
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(top = 18.dp, end = 28.dp),
-                        downFocus = pageFocus.getValue(destination),
+                        miniFocus = if (mini) miniFocus else null,
                         onSearch = { if (!focusLock.locked) searchOpen = true },
                     )
                 }
@@ -479,23 +504,43 @@ fun TvShell() {
                 ThumbnailCache.playbackActive = session != null
                 onDispose { ThumbnailCache.playbackActive = false }
             }
-            if (searchOpen) {
+            if (searchOpen && (session == null || mini)) {
                 SearchOverlay(
                     library = library,
                     streams = streams,
+                    query = searchQuery,
+                    onQuery = { searchQuery = it },
+                    source = searchSource,
+                    onSource = { searchSource = it },
+                    watch = searchWatch,
+                    onWatch = { searchWatch = it },
+                    focusKey = searchFocusKey,
+                    onFocusKey = { searchFocusKey = it },
                     onDismiss = { searchOpen = false },
                     onOpen = { target ->
-                        searchOpen = false
                         when (target) {
                             is SearchTarget.Video -> {
-                                destination = Destination.Videos
-                                focusVideoId = target.id
+                                val video = library.videos.firstOrNull { it.id == target.id }
+                                if (video != null) {
+                                    destination = Destination.Videos
+                                    focusVideoId = video.id
+                                    resumePlayback = true
+                                    promptResume = true
+                                    openPlayer(listOf(video), 0)
+                                }
                             }
                             is SearchTarget.Stream -> {
-                                destination = Destination.Streams
-                                focusStreamId = target.id
+                                val video = streams.items.firstOrNull { it.id == target.id }?.toVideo()
+                                if (video != null) {
+                                    destination = Destination.Streams
+                                    focusStreamId = video.id
+                                    resumePlayback = true
+                                    promptResume = true
+                                    openPlayer(listOf(video), 0)
+                                }
                             }
                             is SearchTarget.Setting -> {
+                                searchOpen = false
                                 lastSettingsCategory = target.category.name
                                 focusSettingKey = target.key
                                 destination = Destination.Settings
@@ -631,7 +676,7 @@ fun TvShell() {
                     onPlay = { queue, index ->
                         resumePlayback = true
                         promptResume = true
-                        session = PlaySession(queue, index)
+                        openPlayer(queue, index)
                     },
                     watch = library.watch,
                     watchlist = watchlist,
@@ -668,6 +713,7 @@ fun TvShell() {
                 )
             }
             if (playing != null) {
+                androidx.compose.runtime.key(playToken) {
                 PlayerScreen(
                     session = playing,
                     resume = resumePlayback,
@@ -681,10 +727,34 @@ fun TvShell() {
                             }
                             .maxOfOrNull { it.positionMs } ?: 0L
                     },
+                    mini = mini,
+                    onEnterMini = {
+                        mini = true
+                        scope.launch { runCatching { pageFocus.getValue(destination).requestFocus() } }
+                    },
+                    onExpand = { mini = false },
+                    onLeaveMini = {
+                        scope.launch { runCatching { pageFocus.getValue(destination).requestFocus() } }
+                    },
+                    playback = playback,
+                    miniFocus = miniFocus,
+                    watchlist = watchlist,
+                    playlists = playlists,
+                    collections = collections,
+                    modifier = if (mini) {
+                        Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 28.dp, bottom = 24.dp)
+                            .width(360.dp)
+                            .height(204.dp)
+                    } else {
+                        Modifier.fillMaxSize()
+                    },
                     onClose = { lastId ->
+                        mini = false
                         session = null
                         link.pushProgress(library)
-                        when (destination) {
+                        if (!searchOpen) when (destination) {
                             Destination.Videos -> focusVideoId = lastId
                             Destination.Streams -> focusStreamId = lastId
                             Destination.Home -> focusHomeId = lastId
@@ -693,6 +763,7 @@ fun TvShell() {
                         }
                     },
                 )
+                }
             }
             notice?.let { message ->
                 Text(
@@ -716,6 +787,7 @@ private fun SideRail(
     selected: Destination,
     navFocus: Map<Destination, FocusRequester>,
     locked: Boolean,
+    miniFocus: FocusRequester? = null,
     onSelect: (Destination) -> Unit,
     onEnter: (Destination) -> Unit,
 ) {
@@ -746,6 +818,7 @@ private fun SideRail(
                     .focusProperties {
                         canFocus = !locked
                         right = FocusRequester.Cancel
+                        if (miniFocus != null && item == Destination.entries.last()) down = miniFocus
                     },
             )
         }
@@ -902,7 +975,7 @@ private fun ShareFoldersOverlay(
 @Composable
 private fun TopChrome(
     onSearch: () -> Unit,
-    downFocus: FocusRequester,
+    miniFocus: FocusRequester? = null,
     modifier: Modifier = Modifier,
 ) {
     var clock by remember { mutableStateOf(currentClock()) }
@@ -934,7 +1007,7 @@ private fun TopChrome(
                 .size(22.dp)
                 .clip(CircleShape)
                 .focusProperties {
-                    down = downFocus
+                    down = miniFocus ?: FocusRequester.Default
                     if (lock.locked) {
                         canFocus = false
                         onEnter = { FocusRequester.Cancel }

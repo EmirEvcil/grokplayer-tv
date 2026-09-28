@@ -371,7 +371,7 @@ fun VideosScreen(
                             left = railFocus
                             right = filterFocus[1]
                             up = addFolderFocus
-                            down = if (videos.isNotEmpty()) firstVideoFocus else FocusRequester.Default
+                            down = if (videos.isNotEmpty()) FocusRequester.Default else FocusRequester.Cancel
                             if (pendingGridFocus) canFocus = false
                         },
                 )
@@ -387,7 +387,7 @@ fun VideosScreen(
                             left = filterFocus[0]
                             right = filterFocus[2]
                             up = addFolderFocus
-                            down = if (videos.isNotEmpty()) firstVideoFocus else FocusRequester.Default
+                            down = if (videos.isNotEmpty()) FocusRequester.Default else FocusRequester.Cancel
                             if (pendingGridFocus) canFocus = false
                         },
                 )
@@ -402,7 +402,7 @@ fun VideosScreen(
                         .focusProperties {
                             left = filterFocus[1]
                             up = addFolderFocus
-                            down = if (videos.isNotEmpty()) firstVideoFocus else FocusRequester.Default
+                            down = if (videos.isNotEmpty()) FocusRequester.Default else FocusRequester.Cancel
                             if (pendingGridFocus) canFocus = false
                         },
                 )
