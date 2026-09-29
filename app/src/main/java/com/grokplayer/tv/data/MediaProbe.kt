@@ -1,5 +1,6 @@
 package com.grokplayer.tv.data
 
+import android.content.ContentUris
 import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaExtractor
@@ -196,6 +197,54 @@ object MediaProbe {
         }
         if (fromRetriever != null) return scale(fromRetriever, maxWidth)
         return scale(thumbnailUtils(path), maxWidth)
+    }
+
+    /** MediaStore's already-decoded thumbnail. Does not open a second video decoder. */
+    fun galleryThumbnail(context: Context, uri: Uri, path: String?, maxWidth: Int): Bitmap? {
+        if (Build.VERSION.SDK_INT < 29) return null
+        val content = when (uri.scheme?.lowercase()) {
+            "content" -> uri
+            else -> videoStoreUri(context, path) ?: return null
+        }
+        return try {
+            val side = maxWidth.coerceIn(64, 512)
+            context.contentResolver.loadThumbnail(content, Size(side, side), null)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun videoStoreUri(context: Context, path: String?): Uri? {
+        if (path.isNullOrBlank()) return null
+        val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        val resolver = context.contentResolver
+        fun firstId(selection: String, args: Array<String>): Uri? {
+            val cursor = runCatching {
+                resolver.query(
+                    collection,
+                    arrayOf(MediaStore.Video.Media._ID),
+                    selection,
+                    args,
+                    null,
+                )
+            }.getOrNull() ?: return null
+            return cursor.use { rows ->
+                if (!rows.moveToFirst()) null
+                else ContentUris.withAppendedId(collection, rows.getLong(0))
+            }
+        }
+        firstId("${MediaStore.MediaColumns.DATA}=?", arrayOf(path))?.let { return it }
+        val file = File(path)
+        val name = file.name
+        if (name.isBlank()) return null
+        val size = runCatching { file.length() }.getOrDefault(0L)
+        if (size > 0L) {
+            firstId(
+                "${MediaStore.MediaColumns.DISPLAY_NAME}=? AND ${MediaStore.MediaColumns.SIZE}=?",
+                arrayOf(name, size.toString()),
+            )?.let { return it }
+        }
+        return firstId("${MediaStore.MediaColumns.DISPLAY_NAME}=?", arrayOf(name))
     }
 
     fun previewFrameAt(context: Context, playlist: File, timeMs: Long, maxWidth: Int = 240): Bitmap? {

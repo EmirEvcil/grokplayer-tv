@@ -14,7 +14,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 internal object SegmentDecoder {
-    fun frameAt(file: File, offsetMs: Long, maxWidth: Int): Bitmap? {
+    fun frameAt(file: File, offsetMs: Long, maxWidth: Int, software: Boolean = false): Bitmap? {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         var reader: ImageReader? = null
@@ -54,7 +54,7 @@ internal object SegmentDecoder {
                     ready.countDown()
                 }
             }, Handler(worker.looper))
-            val decoder = MediaCodec.createDecoderByType(mime)
+            val decoder = if (software) softwareDecoder(mime) ?: return null else MediaCodec.createDecoderByType(mime)
             codec = decoder
             decoder.configure(video, images.surface, null, 0)
             decoder.start()
@@ -101,6 +101,37 @@ internal object SegmentDecoder {
             runCatching { extractor.release() }
             thread?.quitSafely()
         }
+    }
+
+    private val softwareNames = HashMap<String, String?>()
+
+    /** Software codec so a poster can decode while playback holds the hardware decoder. */
+    private fun softwareDecoder(mime: String): MediaCodec? {
+        val name = synchronized(softwareNames) {
+            if (softwareNames.containsKey(mime)) {
+                softwareNames[mime]
+            } else {
+                val found = softwareCodecName(mime)
+                softwareNames[mime] = found
+                found
+            }
+        } ?: return null
+        return MediaCodec.createByCodecName(name)
+    }
+
+    private fun softwareCodecName(mime: String): String? {
+        val matches = android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS)
+            .codecInfos
+            .filter { info ->
+                !info.isEncoder && info.supportedTypes.any { it.equals(mime, true) }
+            }
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            matches.firstOrNull { it.isSoftwareOnly }?.name?.let { return it }
+        }
+        return matches.firstOrNull { info ->
+            val name = info.name.lowercase()
+            "google" in name || ".sw." in name || "software" in name
+        }?.name
     }
 
     private fun yuvToBitmap(image: Image, maxWidth: Int): Bitmap {

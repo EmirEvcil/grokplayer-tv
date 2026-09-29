@@ -253,6 +253,46 @@ object YouTubeCaptions {
         return listOfNotNull(active.maxByOrNull { it.startMs })
     }
 
+    /** Words of this cue that have started. The whole phrase stays, including its beginning. */
+    fun wordsOnScreen(
+        words: List<YtCaptionWord>,
+        positionMs: Long,
+    ): List<YtCaptionWord> {
+        val current = words.indexOfLast { positionMs >= it.startMs }
+        if (current < 0) return emptyList()
+        return words.subList(0, current + 1)
+    }
+
+    fun onScreenCaption(
+        lines: List<YtCaptionLine>,
+        positionMs: Long,
+    ): String {
+        val line = visibleLines(lines, positionMs).singleOrNull() ?: return ""
+        return wordsOnScreen(line.words, positionMs)
+            .joinToString(" ") { it.text.replace('\n', ' ').trim() }
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    /** YouTube text wins. Otherwise every line of the current cue, including a second line. */
+    fun shownCaption(
+        lines: List<YtCaptionLine>,
+        positionMs: Long,
+        exoFallback: String,
+    ): String {
+        val yt = onScreenCaption(lines, positionMs)
+        if (yt.isNotBlank()) return yt
+        return singleCaptionText(exoFallback)
+    }
+
+    fun singleCaptionText(raw: String): String {
+        return raw.replace('\r', '\n')
+            .lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString("\n")
+    }
+
     fun hydrate(
         context: Context,
         tracks: List<YtCaptionTrack>,

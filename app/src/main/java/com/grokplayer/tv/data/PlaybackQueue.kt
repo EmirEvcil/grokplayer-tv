@@ -69,7 +69,7 @@ fun nextPlayable(index: Int, lastIndex: Int, playable: (Int) -> Boolean): Int? {
     return next
 }
 
-fun previousPlayable(index: Int, lastIndex: Int, playable: (Int) -> Boolean): Int? {
+fun previousPlayable(index: Int, playable: (Int) -> Boolean): Int? {
     val previous = index - 1
     if (previous < 0 || !playable(previous)) return null
     return previous
@@ -79,7 +79,7 @@ fun nextVodIndex(index: Int, videos: List<LibraryVideo>): Int? =
     nextPlayable(index, videos.lastIndex) { videos[it].isVod() }
 
 fun previousVodIndex(index: Int, videos: List<LibraryVideo>): Int? =
-    previousPlayable(index, videos.lastIndex) { videos[it].isVod() }
+    previousPlayable(index) { videos[it].isVod() }
 
 fun <T> insertCopyAfter(items: List<T>, current: T, insert: T, same: (T, T) -> Boolean): List<T> {
     val at = items.indexOfFirst { same(it, current) }
@@ -92,6 +92,34 @@ fun <T> insertCopyAfterIndex(items: List<T>, currentIndex: Int, insert: T): List
 }
 
 fun indexAfterInsert(index: Int, insertAt: Int): Int = if (insertAt <= index) index + 1 else index
+
+fun markTemporaryInsert(flags: List<Boolean>, count: Int, insertAt: Int): List<Boolean> {
+    val next = flags.take(count).toMutableList()
+    while (next.size < count) next += false
+    next.add(insertAt.coerceIn(0, next.size), true)
+    return next
+}
+
+fun <T> dropPlayedInsert(items: List<T>, flags: List<Boolean>, at: Int): Pair<List<T>, List<Boolean>>? {
+    if (at !in items.indices || flags.getOrNull(at) != true) return null
+    return items.filterIndexed { index, _ -> index != at } to flags.filterIndexed { index, _ -> index != at }
+}
+
+fun indexAfterPlayedDrop(index: Int, size: Int): Int? =
+    if (index in 0 until size) index else null
+
+fun <T> withQueuedUpcoming(
+    playlist: List<T>,
+    index: Int,
+    queued: List<T>,
+    followingQueue: Boolean,
+    id: (T) -> String,
+): List<T> {
+    if (followingQueue) return queued
+    val ahead = playlist.drop(index.coerceAtLeast(0)).map(id).toSet()
+    val extra = queued.filter { id(it) !in ahead }
+    return if (extra.isEmpty()) playlist else playlist + extra
+}
 
 fun queuePlayNextIndex(ids: List<String>, currentId: String?, pickedId: String): Int =
     queueAddNext(ids, currentId, pickedId).indexOf(pickedId).coerceAtLeast(0)

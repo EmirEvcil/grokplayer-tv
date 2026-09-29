@@ -43,6 +43,21 @@ internal fun sidecarSubtitleConfigs(video: LibraryVideo): List<MediaItem.Subtitl
     }
 }
 
+internal fun sidecarCaptionFile(video: LibraryVideo, language: String?, label: String): File? {
+    val videoFile = resolveVideoFile(video) ?: return null
+    val stem = videoFile.nameWithoutExtension
+    val files = DownloadOwnership.sidecarsBeside(videoFile, subtitlesOnly = true)
+    val lang = language?.trim()?.lowercase()?.take(2).orEmpty()
+    if (lang.isNotEmpty()) {
+        files.firstOrNull { file ->
+            DownloadOwnership.sidecarLanguage(stem, file)?.lowercase()?.startsWith(lang) == true
+        }?.let { return it }
+    }
+    return files.firstOrNull { file ->
+        sidecarLabel(file, DownloadOwnership.sidecarLanguage(stem, file)) == label
+    } ?: files.singleOrNull()
+}
+
 internal fun sidecarAudioFile(video: LibraryVideo, local: File? = null): File? {
     val videoFile = local ?: resolveVideoFile(video) ?: return null
     val stem = videoFile.nameWithoutExtension

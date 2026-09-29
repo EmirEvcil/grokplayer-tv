@@ -31,7 +31,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -108,16 +110,22 @@ fun PlaylistPanel(
     var restoreTick by remember { mutableIntStateOf(1) }
     val listScroll = rememberLazyListState()
     val queueScroll = rememberLazyListState()
-    val rowFocus = remember { mutableMapOf<Int, FocusRequester>() }
+    val rowFocus = remember { mutableMapOf<String, FocusRequester>() }
     val actionRequesters = remember { mutableMapOf<Int, FocusRequester>() }
     val listTab = remember { FocusRequester() }
     val queueTab = remember { FocusRequester() }
-    fun rowRequester(index: Int) = rowFocus.getOrPut(index) { FocusRequester() }
+    fun rowRequester(key: String) = rowFocus.getOrPut(key) { FocusRequester() }
     fun actionRequester(index: Int) = actionRequesters.getOrPut(index) { FocusRequester() }
-    val rows = if (showQueue) queue else videos
+    val liveRows = if (showQueue) queue else videos
+    var shownRows by remember { mutableStateOf(liveRows) }
+    var shownQueue by remember { mutableStateOf(showQueue) }
 
     fun showList() {
         page = PanelPage.List
+        val count = liveRows.size
+        if (count > 0 && anchor !in 0 until count) {
+            anchor = anchor.coerceIn(0, count - 1)
+        }
         restoreTick += 1
     }
     fun back() {
@@ -127,6 +135,35 @@ fun PlaylistPanel(
             PanelPage.Detail -> showList()
             PanelPage.List -> onClose()
         }
+    }
+    val focusManager = LocalFocusManager.current
+    LaunchedEffect(liveRows, showQueue, page) {
+        val sameMode = showQueue == shownQueue
+        val shrinking = sameMode && page == PanelPage.List && liveRows.size < shownRows.size
+        if (shrinking) {
+            // Drop focus before the focused row leaves the tree. Otherwise removing
+            // the played "Sonra oynat" row crashes layout.
+            focusManager.clearFocus(force = true)
+            if (liveRows.isEmpty()) {
+                runCatching { (if (showQueue) queueTab else listTab).requestFocus() }
+            } else {
+                anchor = anchor.coerceIn(0, liveRows.lastIndex)
+                restoreTick += 1
+            }
+            delay(100)
+        }
+        shownQueue = showQueue
+        shownRows = liveRows
+    }
+    LaunchedEffect(shownRows.size) {
+        if (page != PanelPage.List) return@LaunchedEffect
+        val count = shownRows.size
+        if (count <= 0) {
+            runCatching { (if (showQueue) queueTab else listTab).requestFocus() }
+            return@LaunchedEffect
+        }
+        if (anchor !in 0 until count) anchor = count - 1
+        restoreTick += 1
     }
     InterceptBack { back(); true }
     BackHandler(onBack = { back() })
@@ -141,9 +178,8 @@ fun PlaylistPanel(
         when (page) {
             PanelPage.List -> ListPage(
                 showQueue = showQueue,
-                rows = rows,
+                rows = shownRows,
                 currentId = currentId,
-                playingOnQueue = playingOnQueue,
                 playingIndex = playingIndex,
                 listState = if (showQueue) queueScroll else listScroll,
                 listTab = listTab,
@@ -191,7 +227,7 @@ fun PlaylistPanel(
                         onAddQueue = { onAddToQueue(video) },
                         onRemove = {
                             onRemove(video.id)
-                            anchor = anchor.coerceAtMost((rows.size - 2).coerceAtLeast(0))
+                            anchor = anchor.coerceAtMost((liveRows.size - 2).coerceAtLeast(0))
                             showList()
                         },
                         onChangeOrder = {
@@ -217,10 +253,13 @@ fun PlaylistPanel(
                 rows = moving,
                 at = moveAt,
                 onShift = { delta ->
-                    val to = (moveAt + delta).coerceIn(0, moving.lastIndex)
-                    if (to != moveAt) {
-                        moving = moveItem(moving, moveAt, to)
-                        moveAt = to
+                    val last = moving.lastIndex
+                    if (last >= 0) {
+                        val to = (moveAt + delta).coerceIn(0, last)
+                        if (to != moveAt) {
+                            moving = moveItem(moving, moveAt, to)
+                            moveAt = to
+                        }
                     }
                 },
                 onPlace = {
@@ -245,7 +284,7 @@ fun PlaylistPanel(
     LaunchedEffect(restoreTick) {
         if (restoreTick == 0 || page != PanelPage.List) return@LaunchedEffect
         val state = if (showQueue) queueScroll else listScroll
-        val count = rows.size
+        val count = shownRows.size
         if (count == 0) {
             runCatching { (if (showQueue) queueTab else listTab).requestFocus() }
             return@LaunchedEffect
@@ -268,12 +307,11 @@ private fun ColumnScope.ListPage(
     showQueue: Boolean,
     rows: List<LibraryVideo>,
     currentId: String,
-    playingOnQueue: Boolean,
     playingIndex: Int,
     listState: androidx.compose.foundation.lazy.LazyListState,
     listTab: FocusRequester,
     queueTab: FocusRequester,
-    rowRequester: (Int) -> FocusRequester,
+    rowRequester: (String) -> FocusRequester,
     onShowQueue: (Boolean) -> Unit,
     onSelect: (Int) -> Unit,
     onHold: (Int, LibraryVideo) -> Unit,
@@ -282,12 +320,21 @@ private fun ColumnScope.ListPage(
     restoreTick: Int,
 ) {
     val clearFocus = remember { FocusRequester() }
-    val firstRow = if (rows.isNotEmpty()) rowRequester(0) else FocusRequester.Cancel
+    val rowKeys = buildList {
+        val seen = mutableMapOf<String, Int>()
+        rows.forEach { item ->
+            val n = seen.getOrDefault(item.id, 0)
+            seen[item.id] = n + 1
+            add("${item.id}#$n")
+        }
+    }
+    val firstRow = if (rowKeys.isNotEmpty()) rowRequester(rowKeys.first()) else FocusRequester.Cancel
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         TabChip(
             "Liste",
             !showQueue,
             Modifier.focusRequester(listTab).focusProperties {
+                left = FocusRequester.Cancel
                 right = queueTab
                 down = if (showQueue) FocusRequester.Default else firstRow
             },
@@ -312,12 +359,21 @@ private fun ColumnScope.ListPage(
                 .padding(top = 8.dp)
                 .focusRequester(clearFocus)
                 .focusProperties {
+                    left = FocusRequester.Cancel
                     up = queueTab
                     down = firstRow
                 },
             shape = RoundedCornerShape(8.dp),
         ) { focused ->
-            Text("Sırayı temizle", style = GrokType.cardMeta, color = if (focused) GrokInk else GrokYellow, modifier = Modifier.padding(8.dp))
+            Text(
+                "Sırayı temizle",
+                style = GrokType.button,
+                color = if (focused) GrokInk else GrokWhite,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(if (focused) GrokYellow else GrokSurface, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+            )
         }
     } else {
         Spacer(Modifier.height(8.dp))
@@ -327,17 +383,22 @@ private fun ColumnScope.ListPage(
         state = listState,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        itemsIndexed(rows, key = { index, item -> "$index-${item.id}" }) { index, item ->
-            val current = if (showQueue == playingOnQueue && playingIndex >= 0) {
+        itemsIndexed(rows, key = { index, _ -> rowKeys[index] }) { index, item ->
+            val rowKey = rowKeys[index]
+            val current = if (showQueue) {
+                item.id == currentId
+            } else if (playingIndex in rows.indices) {
                 index == playingIndex
             } else {
-                item.id == currentId
+                false
             }
-            val restoreHere = restoreTick > 0 && index == anchor.coerceIn(0, rows.lastIndex)
+            val lastRow = rows.lastIndex
+            val restoreHere = lastRow >= 0 && restoreTick > 0 && index == anchor.coerceIn(0, lastRow)
+            var cardFocused by remember { mutableStateOf(false) }
             if (restoreHere) {
                 LaunchedEffect(restoreTick) {
                     repeat(8) {
-                        if (runCatching { rowRequester(index).requestFocus() }.getOrDefault(false)) return@LaunchedEffect
+                        if (runCatching { rowRequester(rowKey).requestFocus() }.getOrDefault(false)) return@LaunchedEffect
                         delay(32)
                     }
                 }
@@ -347,8 +408,12 @@ private fun ColumnScope.ListPage(
                 onLongClick = { onHold(index, item) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .focusRequester(rowRequester(index))
+                    .onFocusChanged { cardFocused = it.isFocused }
+                    .border(2.dp, if (cardFocused) GrokYellow else GrokSurface, RoundedCornerShape(8.dp))
+                    .background(GrokSurface, RoundedCornerShape(8.dp))
+                    .focusRequester(rowRequester(rowKey))
                     .focusProperties {
+                        left = FocusRequester.Cancel
                         up = if (index == 0) (if (showQueue) clearFocus else listTab) else FocusRequester.Default
                         down = if (index == rows.lastIndex) FocusRequester.Cancel else FocusRequester.Default
                     },
@@ -365,7 +430,7 @@ private fun ColumnScope.ListPage(
                         modifier = Modifier.width(88.dp).height(50.dp),
                     )
                     Column(Modifier.padding(start = 10.dp)) {
-                        Text(item.title, style = GrokType.cardTitle, color = if (focused) GrokYellow else GrokWhite, maxLines = 2)
+                        Text(item.title, style = GrokType.cardTitle, color = GrokWhite, maxLines = 2)
                         Text(
                             item.durationMs.formatClock() + " · " + if (current) "Şu an oynuyor" else item.sourceLabel,
                             style = GrokType.cardMeta,
@@ -427,6 +492,7 @@ private fun ColumnScope.DetailPage(
                         .onFocusChanged { rowFocused = it.isFocused }
                         .focusRequester(requester(index))
                         .focusProperties {
+                            left = FocusRequester.Cancel
                             up = if (above == null) FocusRequester.Cancel else requester(above)
                             down = if (below == null) FocusRequester.Cancel else requester(below)
                         },
@@ -437,7 +503,10 @@ private fun ColumnScope.DetailPage(
                         action.label,
                         style = GrokType.button,
                         color = if (focused) GrokInk else GrokWhite,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(if (focused) GrokYellow else GrokSurface, RoundedCornerShape(8.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                     )
                 }
             }
@@ -535,12 +604,20 @@ private fun ColumnScope.CollectionPage(
                     .onFocusChanged { rowFocused = it.isFocused }
                     .then(if (index == 0) Modifier.focusRequester(first) else Modifier)
                     .focusProperties {
+                        left = FocusRequester.Cancel
                         up = if (index == 0) FocusRequester.Cancel else FocusRequester.Default
                         down = if (index == names.lastIndex) FocusRequester.Cancel else FocusRequester.Default
                     },
                 shape = RoundedCornerShape(8.dp),
             ) { focused ->
-                Text(item.third, color = if (focused) GrokInk else GrokWhite, modifier = Modifier.padding(12.dp))
+                Text(
+                    item.third,
+                    color = if (focused) GrokInk else GrokWhite,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(if (focused) GrokYellow else GrokSurface, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                )
             }
         }
     }
@@ -556,7 +633,26 @@ internal fun actionNeighbor(labels: List<String>, index: Int, delta: Int): Int? 
 @Composable
 private fun TabChip(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
     FocusableAction(onClick = onClick, modifier = modifier, shape = RoundedCornerShape(8.dp)) { focused ->
-        Text(label, style = GrokType.section, color = if (focused) GrokInk else if (selected) GrokYellow else GrokMuted, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+        Text(
+            label,
+            style = GrokType.button,
+            color = if (focused) GrokInk else if (selected) GrokWhite else GrokMuted,
+            modifier = Modifier
+                .background(
+                    when {
+                        focused -> GrokYellow
+                        selected -> GrokSurface
+                        else -> Color.Transparent
+                    },
+                    RoundedCornerShape(8.dp),
+                )
+                .border(
+                    width = 1.dp,
+                    color = if (selected && !focused) GrokYellow else Color.Transparent,
+                    shape = RoundedCornerShape(8.dp),
+                )
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+        )
     }
 }
 

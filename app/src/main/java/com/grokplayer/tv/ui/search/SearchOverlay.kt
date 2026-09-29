@@ -39,6 +39,11 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -255,6 +260,7 @@ fun SearchOverlay(
         Modifier
             .fillMaxSize()
             .background(GrokInk.copy(alpha = 0.72f))
+            .focusProperties { canFocus = false }
             .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) { onDismiss() },
         contentAlignment = Alignment.TopCenter,
     ) {
@@ -266,6 +272,7 @@ fun SearchOverlay(
                 .background(GrokSurface, RoundedCornerShape(12.dp))
                 .border(1.dp, GrokYellow.copy(alpha = 0.28f), RoundedCornerShape(12.dp))
                 .padding(16.dp)
+                .focusProperties { canFocus = false }
                 .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {},
         ) {
             Text(stringResource(R.string.search), style = GrokType.section, color = GrokWhite)
@@ -282,6 +289,13 @@ fun SearchOverlay(
                     .fillMaxWidth()
                     .focusRequester(fieldFocus)
                     .focusProperties { down = hits.firstOrNull()?.let { requester(it.key) } ?: sourceFocus }
+                    .onPreviewKeyEvent { event ->
+                        if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionDown) {
+                            return@onPreviewKeyEvent false
+                        }
+                        val target = hits.firstOrNull()?.let { requester(it.key) } ?: sourceFocus
+                        runCatching { target.requestFocus() }.getOrDefault(false)
+                    }
                     .background(GrokInk, RoundedCornerShape(8.dp))
                     .then(
                         if (fieldFocused) Modifier.border(1.5.dp, GrokYellow, RoundedCornerShape(8.dp))

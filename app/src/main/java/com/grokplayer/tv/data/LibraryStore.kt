@@ -793,7 +793,7 @@ class LibraryStore(context: Context) {
         if (key != null) {
             durations[key]?.let { return it }
         }
-        if (ThumbnailCache.playbackActive) return 0L
+        if (ThumbnailCache.playbackActive || !ThumbnailCache.allowDecoderGrab) return 0L
         val value = MediaProbe.durationMs(app, uri, path)
         if (key != null && value > 0L) durations[key] = value
         return value

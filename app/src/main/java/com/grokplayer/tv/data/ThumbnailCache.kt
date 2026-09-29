@@ -12,6 +12,13 @@ object ThumbnailCache {
     @Volatile
     var playbackActive: Boolean = false
 
+    @Volatile
+    var allowDecoderGrab: Boolean = true
+
+    /** File the open player is decoding. A second retriever on it stalls every other poster. */
+    @Volatile
+    var activeMediaPath: String? = null
+
     private val lock = Any()
 
     fun existing(context: Context, key: String, maxWidth: Int = TILE_WIDTH): File? {
@@ -28,26 +35,54 @@ object ThumbnailCache {
         maxWidth: Int = TILE_WIDTH,
     ): File? {
         existing(context, key, maxWidth)?.let { return it }
-        if (playbackActive) return null
-        val scheme = uri.scheme?.lowercase()
-        val remote = scheme == "http" || scheme == "https"
+        val bitmap = try {
+            decodeFrame(context, uri, path, timeMs, maxWidth)
+        } catch (_: Throwable) {
+            null
+        } ?: return null
         synchronized(lock) {
-            existing(context, key, maxWidth)?.let { return it }
-            if (playbackActive) return null
-            val at = timeMs.coerceAtLeast(0L)
-            val bitmap = try {
-                if (remote && path?.let { File(it).isFile } != true) {
-                    ExoFrameGrab.grab(context, uri, at, timeoutMs = 8_000L)
-                } else {
-                    localPreviewBitmap(context, path, uri, at, maxWidth)
-                        ?: MediaProbe.frameBitmap(context, uri, path, at, maxWidth)
-                        ?: ExoFrameGrab.grab(context, uri, at, timeoutMs = 8_000L, rejectBlack = false)
-                }
-            } catch (_: Throwable) {
-                null
-            } ?: return null
+            existing(context, key, maxWidth)?.let {
+                if (!bitmap.isRecycled) bitmap.recycle()
+                return it
+            }
             return write(context, key, bitmap, recycle = true, maxWidth = maxWidth)
         }
+    }
+
+    private fun decodeFrame(
+        context: Context,
+        uri: android.net.Uri,
+        path: String?,
+        timeMs: Long,
+        maxWidth: Int,
+    ): Bitmap? {
+        val at = timeMs.coerceAtLeast(0L)
+        val onDisk = path?.let { File(it).isFile } == true
+        val remote = uri.scheme.equals("http", true) || uri.scheme.equals("https", true)
+        MediaProbe.galleryThumbnail(context, uri, path, maxWidth)?.let { return it }
+        // Fullscreen playback already owns the hardware decoder. A second grab ANRs.
+        if (playbackActive) return null
+        val playingThis = onDisk && !path.isNullOrBlank() && path == activeMediaPath
+        if (!allowDecoderGrab) {
+            if (remote && !onDisk) return null
+            if (playingThis) return null
+            // MediaMetadataRetriever takes the hardware decoder and stalls every poster
+            // while the mini player is open. A software codec can run beside playback.
+            val file = path?.let { File(it) }?.takeIf { it.isFile && it.canRead() } ?: return null
+            return if (file.extension.equals("m3u8", true)) {
+                val slice = hlsPreviewSlice(file, at) ?: return null
+                SegmentDecoder.frameAt(slice.file, slice.offsetMs, maxWidth, software = true)
+            } else {
+                SegmentDecoder.frameAt(file, at, maxWidth, software = true)
+            }
+        }
+        if (remote && !onDisk) {
+            return ExoFrameGrab.grab(context, uri, at, timeoutMs = 8_000L)
+        }
+        return localPreviewBitmap(context, path, uri, at, maxWidth)
+            ?: MediaProbe.frameBitmap(context, uri, path, at, maxWidth)
+            ?: MediaProbe.galleryThumbnail(context, uri, path, maxWidth)
+            ?: ExoFrameGrab.grab(context, uri, at, timeoutMs = 8_000L, rejectBlack = false)
     }
 
     private fun localPreviewBitmap(

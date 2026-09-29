@@ -32,8 +32,8 @@ A personal list for videos to watch later. It is not a playlist.
 - Add extra folders from internal or USB
 - Filters: all, internal, USB
 - Sort: recently added, oldest, A–Z, newest, episode order
-- Search across videos, streams, and settings. The first Back hides the keyboard so the results can be focused. Cards show a thumbnail, duration, and a preview, plus whether the video is on the device or online and if it is watched. Filters at the bottom are source (Tümü / Cihazda / Çevrimiçi) and watch status (Tümü / İzlendi / İzleniyor / İzlenmedi). Opening a result plays it; Back returns to the same search
-- Card thumbnails, hover preview, duration, progress bar
+- Search across videos, streams, and settings. Down from the box moves to the first result. The first Back hides the keyboard so the results can be focused. Cards show a thumbnail, duration, and a preview, plus whether the video is on the device or online and if it is watched. Filters at the bottom are source (Tümü / Cihazda / Çevrimiçi) and watch status (Tümü / İzlendi / İzleniyor / İzlenmedi). Opening a result plays it; Back returns to the same search. Search also opens while the mini player is showing
+- Card thumbnails, hover preview, duration, progress bar. Posters keep loading while the mini player is open. A gallery thumbnail is used when Android already has one; otherwise a software decoder runs beside playback so the hardware decoder stays with the video. That path works from Android 7 up. A fullscreen player does not start a second decode
 - Hold OK for options: play, details, add to playlist/collection, add to or remove from the watchlist, mark watched, like/dislike, send to PC (rows have icons)
 
 ### Listeler
@@ -48,8 +48,8 @@ A personal list for videos to watch later. It is not a playlist.
 - Progress bars on video tiles (same as Videolar)
 
 ### Mini player and queue
-- **Küçük oynatıcı** in Oynatma settings. While a video is playing, Back shrinks it to the bottom right and playback continues, including subtitles. A paused video closes instead. The card shows previous, play/pause, and next while focused, plus fullscreen and close. Close pauses and dismisses. Fullscreen returns to the player at the same position. Pausing from the card does not dismiss it. The setting off means Back always leaves the player
-- One queue for every VOD. Hold OK: **Sonra oynat** inserts after the current video, **Sıraya ekle** appends. Live streams are not queued. The player list switches between **Liste** (the list playback started from, in that order) and **Sıra**. Removing or clearing only changes the queue. Clearing drops every queued entry, including the current one, and the video keeps playing
+- **Küçük oynatıcı** in Oynatma settings, on by default. While a video is playing, Back shrinks it to the bottom right and playback continues. A paused video closes instead. The card shows previous, play/pause, and next while focused, plus fullscreen and close. Close pauses and dismisses. Fullscreen returns to the player at the same position. Pausing from the card does not dismiss it. The setting off means Back always leaves the player. Videolar, Listeler, and search stay usable while the card is up. Down from the top-right search button focuses the card. Captions on the card are smaller and move above the buttons while it is focused
+- One queue for every VOD. Hold OK: **Sonra oynat** inserts after the current video, **Sıraya ekle** appends. Live streams are not queued. The player list switches between **Liste** (the list playback started from, in that order) and **Sıra**, and opens on the row that is playing. Down from Liste reaches the first row; Down from Sıra reaches **Sırayı temizle**. **Sonra oynat** on Liste puts a copy into the playing order. When that copy finishes it leaves the list, and if it was the last item the controls stay up. **Sıraya ekle** appends queued videos that are not already coming up. Removing the video that is playing from Sıra does not change the on-screen title. Clearing drops every queued entry, including the current one, and the video keeps playing
 - Leaving the app with the TV Home button does not keep this card on the launcher. Android TV only allows picture-in-picture for calls and a few system categories, not ordinary video playback, and not on TV versions before Android 14
 
 ### Watch tracking
@@ -85,13 +85,13 @@ A personal list for videos to watch later. It is not a playlist.
 - With all-files access, downloads are stored in `Movies/GrokPlayer/downloads` and survive uninstall. Without it they stay in the app’s external files. Yedekler can request that permission
 
 ### Player
-- Overlay player; Back closes and restores last focus
+- Overlay player. Back shrinks to the mini player when that setting is on and the video is playing. A paused video, or the setting off, closes and restores the last focused card
 - Queue with previous / next, next-up, auto-next (finished items are marked watched)
 - In-player resume popup (**Kaldığın yer**) on VOD when opened from a card or menu; uses the real duration
 - Seek with frame previews around the playhead. A local file is read from disk, a downloaded HLS playlist is read from its segments, and a YouTube VOD uses that video’s storyboard. A card stays empty until its own frame is ready
 - Speed, subtitle, and audio/dub menus (icons on every row)
 - Selected speed is applied again when the decoder is ready
-- YouTube captions for that video (srv3, then json3, shown as overlay cues and a sidecar VTT) and dubbed audio tracks
+- Captions are drawn by the app, one cue at a time. A local file uses a sidecar such as `video.tr.srt` or `video.tr.vtt`. An SRT cue keeps every line, so a two-line subtitle stays two lines. A long cue wraps instead of being cut off with `...`. YouTube captions (srv3, then json3) and a sidecar VTT show the current phrase from its first word. YouTube captions are also saved as a sidecar VTT. Dubbed audio tracks are in the same menu
 - Live: seek in the window, go-to-live, live edge, no watch-progress chrome
 - AVI via libVLC; other VOD via ExoPlayer (HLS / DASH / progressive / local HLS)
 - A completed download is opened from the local file, not re-resolved from YouTube

@@ -103,6 +103,7 @@ import com.grokplayer.tv.ui.theme.GrokType
 import com.grokplayer.tv.ui.theme.GrokWhite
 import com.grokplayer.tv.ui.theme.GrokYellow
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
 import com.grokplayer.tv.ui.theme.AppBack
 import com.grokplayer.tv.ui.theme.BackHub
 import com.grokplayer.tv.ui.theme.LocalBackHub
@@ -500,8 +501,13 @@ fun TvShell() {
                     )
                 }
             }
-            DisposableEffect(session != null) {
-                ThumbnailCache.playbackActive = session != null
+            val fullScreenPlayback = session != null && !mini
+            val playbackSession = session != null
+            SideEffect {
+                ThumbnailCache.playbackActive = fullScreenPlayback
+                ThumbnailCache.allowDecoderGrab = !playbackSession
+            }
+            DisposableEffect(Unit) {
                 onDispose { ThumbnailCache.playbackActive = false }
             }
             if (searchOpen && (session == null || mini)) {

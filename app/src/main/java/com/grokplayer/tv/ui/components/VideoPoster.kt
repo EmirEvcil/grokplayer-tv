@@ -77,14 +77,16 @@ fun VideoPoster(
     var duration by remember(cacheKey) { mutableLongStateOf(durationMs) }
     var preview by remember { mutableStateOf(false) }
     val ytId = YouTubeResolver.videoId(originUrl.orEmpty()) ?: YouTubeResolver.videoId(uri.toString())
-    val artwork = if (posterUsesNetwork(path)) {
-        posterUrl?.takeIf { it.startsWith("http") } ?: ytId?.let { YouTubeResolver.posterUrl(it) }
-    } else {
-        null
+    val networkArt = posterUrl?.takeIf { it.startsWith("http") } ?: ytId?.let { YouTubeResolver.posterUrl(it) }
+    val remoteOnly = posterUsesNetwork(path)
+    var fallback by remember(cacheKey, maxWidth) { mutableStateOf<String?>(null) }
+    val artwork = when {
+        remoteOnly -> networkArt
+        else -> fallback
     }
 
-    LaunchedEffect(cacheKey, maxWidth, timeMs, artwork) {
-        if (artwork != null) return@LaunchedEffect
+    LaunchedEffect(cacheKey, maxWidth, timeMs, networkArt, remoteOnly) {
+        if (remoteOnly) return@LaunchedEffect
         var attempt = 0
         while (isActive && poster == null) {
             val cached = withContext(Dispatchers.IO) { ThumbnailCache.existing(context, cacheKey, maxWidth) }
@@ -93,10 +95,8 @@ fun VideoPoster(
                 failed = false
                 return@LaunchedEffect
             }
-            if (ThumbnailCache.playbackActive) {
-                attempt++
-                delay(400)
-                continue
+            if (fallback == null && !networkArt.isNullOrBlank() && !ThumbnailCache.allowDecoderGrab) {
+                fallback = networkArt
             }
             val extracted = withContext(Dispatchers.IO) {
                 ThumbnailCache.extract(context, cacheKey, uri, path, timeMs = timeMs, maxWidth = maxWidth)
@@ -109,7 +109,7 @@ fun VideoPoster(
             attempt++
             delay(if (attempt < 8) 400L else 1_200L)
         }
-        failed = poster == null
+        failed = poster == null && artwork == null
     }
 
     LaunchedEffect(cacheKey, durationMs, isLive) {
@@ -122,6 +122,10 @@ fun VideoPoster(
         if (YouTubeResolver.videoId(raw) != null || YouTubeResolver.videoId(originUrl.orEmpty()) != null) {
             return@LaunchedEffect
         }
+        while (isActive && (ThumbnailCache.playbackActive || !ThumbnailCache.allowDecoderGrab)) {
+            delay(500)
+        }
+        if (!isActive) return@LaunchedEffect
         duration = withContext(Dispatchers.IO) { MediaProbe.durationMs(context, uri, path) }
     }
 
@@ -141,7 +145,7 @@ fun VideoPoster(
         if (artwork != null || poster != null) {
             AsyncImage(
                 model = ImageRequest.Builder(context)
-                    .data(artwork ?: poster)
+                    .data(poster ?: artwork)
                     .crossfade(false)
                     .build(),
                 contentDescription = title,

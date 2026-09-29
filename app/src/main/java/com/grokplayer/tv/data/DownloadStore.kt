@@ -178,11 +178,11 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
         val snapshots = items.map {
             DownloadPolicy.Snapshot(it.id, it.title, it.url, it.status, it.localPath)
         }
-        val existingId = DownloadPolicy.decide(snapshots, title, url) { path -> File(path).exists() }.existingId
+        val existingId = DownloadPolicy.decide(snapshots, url) { path -> File(path).exists() }.existingId
         return when (enqueue(title, url, maxHeight, count = true, pageUrl = pageUrl)) {
             DownloadPolicy.Action.SkipActive -> null
             else -> existingId ?: items.firstOrNull {
-                DownloadPolicy.identity(it.title, it.url) == DownloadPolicy.identity(title, url)
+                DownloadPolicy.identity(it.url) == DownloadPolicy.identity(url)
             }?.id
         }
     }
@@ -197,7 +197,7 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
         val snapshots = items.map {
             DownloadPolicy.Snapshot(it.id, it.title, it.url, it.status, it.localPath)
         }
-        val decision = DownloadPolicy.decide(snapshots, title, url) { path -> File(path).exists() }
+        val decision = DownloadPolicy.decide(snapshots, url) { path -> File(path).exists() }
         when (decision.action) {
             DownloadPolicy.Action.SkipDone, DownloadPolicy.Action.SkipActive -> return decision.action
             DownloadPolicy.Action.RetryFailed -> {
@@ -222,7 +222,7 @@ class DownloadStore(context: Context, private val settings: PlaybackSettings) {
             pageUrl = pageUrl,
         )
         items = listOf(item) + items.filterNot {
-            DownloadPolicy.identity(it.title, it.url) == DownloadPolicy.identity(title, url)
+            DownloadPolicy.identity(it.url) == DownloadPolicy.identity(url)
         }
         persist()
         if (count) pump(maxHeight)

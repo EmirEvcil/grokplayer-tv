@@ -8,7 +8,7 @@ import org.json.JSONObject
 
 object SharedRoots {
     fun downloads(context: Context): File {
-        val shared = sharedDownloads(context)
+        val shared = sharedDownloads()
         val legacy = legacyDownloads(context)
         if (!canWrite(shared)) return legacy.apply { mkdirs() }
         val pending = legacy.isDirectory &&
@@ -19,18 +19,18 @@ object SharedRoots {
     }
 
     fun backups(context: Context): File {
-        val parent = if (canWrite(sharedRoot(context))) sharedRoot(context) else appRoot(context)
+        val parent = if (canWrite(sharedRoot())) sharedRoot() else appRoot(context)
         return File(parent, "backups").apply { mkdirs() }
     }
 
-    fun usingSharedStorage(context: Context): Boolean = canWrite(sharedRoot(context))
+    fun usingSharedStorage(): Boolean = canWrite(sharedRoot())
 
-    fun sharedRoot(context: Context): File =
+    fun sharedRoot(): File =
         File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "GrokPlayer")
 
     fun migrateLegacyDownloads(context: Context): Boolean {
         val legacy = legacyDownloads(context)
-        val shared = sharedDownloads(context)
+        val shared = sharedDownloads()
         if (!legacy.isDirectory || legacy.list().isNullOrEmpty()) return false
         if (!canWrite(shared)) return false
         if (legacy.canonicalPath == shared.canonicalPath) return false
@@ -49,7 +49,7 @@ object SharedRoots {
         return true
     }
 
-    private fun sharedDownloads(context: Context) = File(sharedRoot(context), "downloads")
+    private fun sharedDownloads() = File(sharedRoot(), "downloads")
 
     private fun legacyDownloads(context: Context) =
         File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), "downloads")

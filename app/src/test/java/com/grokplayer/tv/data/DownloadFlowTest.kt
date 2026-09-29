@@ -25,9 +25,9 @@ class DownloadFlowTest {
     fun singleVideoThenDuplicateIsSkipped() {
         val url = "http://pc/v1/file?path=folder1/clip.mp4"
         val done = snap("1", "clip", DownloadStatus.Done, "/tmp/s01e01.mp4", url)
-        val first = DownloadPolicy.decide(emptyList(), "clip", url)
+        val first = DownloadPolicy.decide(emptyList(), url)
         assertEquals(DownloadPolicy.Action.Enqueue, first.action)
-        val again = DownloadPolicy.decide(listOf(done), "clip", url) { true }
+        val again = DownloadPolicy.decide(listOf(done), url) { true }
         assertEquals(DownloadPolicy.Action.SkipDone, again.action)
     }
 
@@ -42,7 +42,6 @@ class DownloadFlowTest {
         )
         val other = DownloadPolicy.decide(
             listOf(done),
-            "clip",
             "http://pc/v1/file?path=folder2/clip.mp4",
         ) { true }
         assertEquals(DownloadPolicy.Action.Enqueue, other.action)
@@ -51,7 +50,7 @@ class DownloadFlowTest {
     @Test
     fun failedDownloadIsRetryableAndDoesNotDuplicate() {
         val failed = snap("1", "clip", DownloadStatus.Failed, null, "http://x/clip.mp4")
-        val decision = DownloadPolicy.decide(listOf(failed), "clip", "http://x/clip.mp4")
+        val decision = DownloadPolicy.decide(listOf(failed), "http://x/clip.mp4")
         assertEquals(DownloadPolicy.Action.RetryFailed, decision.action)
         assertEquals("1", decision.existingId)
     }
@@ -59,7 +58,7 @@ class DownloadFlowTest {
     @Test
     fun missingLocalFileIsRetryableInsteadOfDuplicate() {
         val gone = snap("1", "clip", DownloadStatus.Done, "/missing/clip.mp4", "http://x/clip.mp4")
-        val decision = DownloadPolicy.decide(listOf(gone), "clip", "http://x/clip.mp4") { false }
+        val decision = DownloadPolicy.decide(listOf(gone), "http://x/clip.mp4") { false }
         assertEquals(DownloadPolicy.Action.RetryFailed, decision.action)
         assertEquals("1", decision.existingId)
     }
@@ -121,7 +120,6 @@ class DownloadFlowTest {
             assertTrue(OfflineCollections.isLocalFile(file.absolutePath, "file"))
             val skip = DownloadPolicy.decide(
                 listOf(snap("z", "ep", DownloadStatus.Done, file.absolutePath, "http://127.0.0.1:$port/ep.mp4")),
-                "ep",
                 "http://127.0.0.1:$port/ep.mp4",
             ) { File(it).exists() }
             assertEquals(DownloadPolicy.Action.SkipDone, skip.action)

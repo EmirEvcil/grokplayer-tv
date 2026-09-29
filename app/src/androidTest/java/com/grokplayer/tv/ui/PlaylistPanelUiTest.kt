@@ -5,7 +5,11 @@ import android.view.KeyEvent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PixelMap
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.filter
@@ -27,6 +31,7 @@ import com.grokplayer.tv.data.StorageSource
 import com.grokplayer.tv.data.insertCopyAfterIndex
 import com.grokplayer.tv.ui.player.PlaylistPanel
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -53,6 +58,63 @@ class PlaylistPanelUiTest {
         rule.onNodeWithText("Cem").assertIsFocused()
         key(KeyEvent.KEYCODE_DPAD_UP)
         rule.onNodeWithText("Beta").assertIsFocused()
+    }
+
+    @Test
+    fun focusedMenuRowIsYellowWithDarkText() {
+        rule.setContent {
+            PlaylistPanel(
+                videos = listOf(clip("a", "Alfa")),
+                currentId = "a",
+                onSelectList = {},
+                onClose = {},
+            )
+        }
+        rule.onNodeWithText("Alfa").performTouchInput { longClick() }
+        rule.onNodeWithText("Sonra oynat").assertIsFocused()
+        val focused = rule.onNodeWithText("Sonra oynat").captureToImage().toPixelMap()
+        assertTrue(count(focused, ::yellow) > count(focused, ::white))
+        assertTrue(count(focused, ::dark) > 0)
+        key(KeyEvent.KEYCODE_DPAD_DOWN)
+        rule.onNodeWithText("Sıraya ekle").assertIsFocused()
+        val idle = rule.onNodeWithText("Sonra oynat").captureToImage().toPixelMap()
+        assertTrue(count(idle, ::yellow) < count(idle, ::white))
+        assertTrue(count(idle, ::dark) > count(idle, ::yellow))
+    }
+
+    @Test
+    fun focusedListCardKeepsAWhiteTitle() {
+        rule.setContent {
+            PlaylistPanel(
+                videos = listOf(clip("a", "Alfa"), clip("b", "Beta")),
+                currentId = "a",
+                playingIndex = 0,
+                onSelectList = {},
+                onClose = {},
+            )
+        }
+        rule.onNodeWithText("Alfa").assertIsFocused()
+        val card = rule.onNodeWithText("Alfa").captureToImage().toPixelMap()
+        val inset = 8.coerceAtMost(card.width / 4).coerceAtMost(card.height / 4)
+        assertTrue(count(card, ::white, inset, step = 1) > 0)
+        assertTrue(count(card, ::yellow, inset, step = 1) == 0)
+    }
+
+    @Test
+    fun leftFromTheOpenListKeepsTheRowFocused() {
+        rule.setContent {
+            PlaylistPanel(
+                videos = listOf(clip("a", "Alfa"), clip("b", "Beta")),
+                currentId = "a",
+                playingIndex = 0,
+                onSelectList = {},
+                onClose = {},
+            )
+        }
+        rule.waitForIdle()
+        rule.onNodeWithText("Alfa").assertIsFocused()
+        key(KeyEvent.KEYCODE_DPAD_LEFT)
+        rule.onNodeWithText("Alfa").assertIsFocused()
     }
 
     @Test
@@ -114,6 +176,48 @@ class PlaylistPanelUiTest {
         rule.onNodeWithText("Sonra oynat").performClick()
         assertEquals(listOf("a", "b", "d", "c"), queue.items.map { it.id })
         rule.onNodeWithText("3/4").assertIsDisplayed()
+    }
+
+    @Test
+    fun removingTheFocusedLastRowKeepsThePreviousRowFocused() {
+        var videos by mutableStateOf(listOf(clip("a", "Alfa"), clip("b", "Beta"), clip("c", "Cem")))
+        rule.setContent {
+            PlaylistPanel(
+                videos = videos,
+                currentId = "c",
+                playingIndex = 2,
+                onSelectList = {},
+                onClose = {},
+            )
+        }
+        rule.waitForIdle()
+        rule.onNodeWithText("Cem").assertIsFocused()
+        videos = listOf(clip("a", "Alfa"), clip("b", "Beta"))
+        rule.mainClock.advanceTimeBy(300)
+        rule.waitForIdle()
+        rule.onAllNodesWithText("Cem").assertCountEquals(0)
+        rule.onNodeWithText("Beta").assertIsFocused()
+    }
+
+    @Test
+    fun removingAFocusedCopyDoesNotCrash() {
+        var videos by mutableStateOf(listOf(clip("a", "Alfa"), clip("b", "Beta"), clip("b", "Beta")))
+        rule.setContent {
+            PlaylistPanel(
+                videos = videos,
+                currentId = "b",
+                playingIndex = 2,
+                onSelectList = {},
+                onClose = {},
+            )
+        }
+        rule.waitForIdle()
+        rule.onAllNodes(hasText("Beta") and isFocused()).assertCountEquals(1)
+        videos = listOf(clip("a", "Alfa"), clip("b", "Beta"))
+        rule.mainClock.advanceTimeBy(300)
+        rule.waitForIdle()
+        rule.onAllNodesWithText("Beta").assertCountEquals(1)
+        rule.onNodeWithText("Beta").assertIsFocused()
     }
 
     @Test
@@ -258,6 +362,31 @@ class PlaylistPanelUiTest {
         key(KeyEvent.KEYCODE_DPAD_DOWN)
         rule.onNodeWithText("İzleme listesine ekle").assertIsFocused()
     }
+
+    private fun count(map: PixelMap, match: (Color) -> Boolean, inset: Int = 0, step: Int = 0): Int {
+        var hits = 0
+        val stepX = if (step > 0) step else ((map.width - inset * 2) / 32).coerceAtLeast(1)
+        val stepY = if (step > 0) step else ((map.height - inset * 2) / 16).coerceAtLeast(1)
+        var y = inset
+        while (y < map.height - inset) {
+            var x = inset
+            while (x < map.width - inset) {
+                if (match(map[x, y])) hits++
+                x += stepX
+            }
+            y += stepY
+        }
+        return hits
+    }
+
+    private fun yellow(color: Color): Boolean =
+        color.alpha > 0.8f && color.red > 0.85f && color.green > 0.65f && color.blue < 0.45f
+
+    private fun white(color: Color): Boolean =
+        color.alpha > 0.8f && color.red > 0.85f && color.green > 0.85f && color.blue > 0.85f
+
+    private fun dark(color: Color): Boolean =
+        color.alpha > 0.8f && color.red < 0.2f && color.green < 0.2f && color.blue < 0.2f
 
     private fun back() {
         rule.waitForIdle()

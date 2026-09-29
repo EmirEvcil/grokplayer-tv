@@ -531,7 +531,6 @@ fun ListelerScreen(
                     )
                     ListsBody.Playlists -> PlaylistList(
                         items = visiblePlaylists,
-                        extras = pc?.let { playlists.availableFolders(it.id, grantedPaths) }.orEmpty(),
                         requester = ::requester,
                         onFocused = { rememberList(it) },
                         onOpen = { item ->
@@ -955,7 +954,6 @@ fun ListelerScreen(
 @Composable
 private fun PlaylistList(
     items: List<FolderPlaylist>,
-    extras: List<Pair<String, String>>,
     requester: (String) -> FocusRequester,
     onFocused: (String) -> Unit,
     onOpen: (FolderPlaylist) -> Unit,

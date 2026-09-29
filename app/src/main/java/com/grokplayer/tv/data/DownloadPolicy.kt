@@ -41,17 +41,16 @@ object DownloadPolicy {
         }
     }
 
-    fun identity(title: String, url: String): String = normalizeUrl(url)
+    fun identity(url: String): String = normalizeUrl(url)
 
     fun normalizeUrl(url: String): String = url.trim().substringBefore('#').lowercase()
 
     fun decide(
         existing: List<Snapshot>,
-        title: String,
         url: String,
         fileExists: (String) -> Boolean = { true },
     ): Decision {
-        val key = identity(title, url)
+        val key = identity(url)
         if (key.isBlank()) return Decision(Action.Enqueue)
         val match = existing.firstOrNull { normalizeUrl(it.url) == key }
         return when {
@@ -76,13 +75,13 @@ object DownloadPolicy {
         var skippedDone = 0
         var skippedActive = 0
         val seen = HashSet<String>()
-        requests.forEach { (title, url) ->
-            val key = identity(title, url)
+        requests.forEach { (_, url) ->
+            val key = identity(url)
             if (key.isNotBlank() && !seen.add(key)) {
                 skippedDone += 1
                 return@forEach
             }
-            when (decide(existing, title, url, fileExists).action) {
+            when (decide(existing, url, fileExists).action) {
                 Action.Enqueue -> queued += 1
                 Action.RetryFailed -> retried += 1
                 Action.SkipDone -> skippedDone += 1

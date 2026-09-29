@@ -1,6 +1,7 @@
 package com.grokplayer.tv.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class PlaybackQueueTest {
@@ -15,8 +16,8 @@ class PlaybackQueueTest {
         val playable = listOf(true, true, false)
         assertEquals(1, nextPlayable(0, playable.lastIndex) { playable[it] })
         assertEquals(null, nextPlayable(1, playable.lastIndex) { playable[it] })
-        assertEquals(0, previousPlayable(1, playable.lastIndex) { playable[it] })
-        assertEquals(null, previousPlayable(0, playable.lastIndex) { playable[it] })
+        assertEquals(0, previousPlayable(1) { playable[it] })
+        assertEquals(null, previousPlayable(0) { playable[it] })
     }
 
     @Test
@@ -52,5 +53,41 @@ class PlaybackQueueTest {
     @Test
     fun queuePlayNextReportsTheNewIndex() {
         assertEquals(2, queuePlayNextIndex(listOf("a", "b", "c", "d"), "b", "d"))
+    }
+
+    @Test
+    fun playedInsertDropsOutAndTheOldOrderContinues() {
+        val flags = markTemporaryInsert(List(4) { false }, 4, 2)
+        assertEquals(listOf(false, false, true, false, false), flags)
+        val removed = dropPlayedInsert(listOf("a", "b", "d", "c", "d"), flags, 2)
+        assertEquals(listOf("a", "b", "c", "d"), removed?.first)
+        assertEquals(listOf(false, false, false, false), removed?.second)
+    }
+
+    @Test
+    fun droppingAPlayedInsertAtTheEndLeavesNoIndex() {
+        val flags = markTemporaryInsert(listOf(false, false), 2, 2)
+        assertEquals(listOf(false, false, true), flags)
+        val removed = dropPlayedInsert(listOf("a", "b", "x"), flags, 2)
+        assertEquals(listOf("a", "b"), removed?.first)
+        assertEquals(listOf(false, false), removed?.second)
+        assertNull(indexAfterPlayedDrop(2, removed!!.first.size))
+        val middle = dropPlayedInsert(
+            listOf("a", "b", "d", "c", "d"),
+            markTemporaryInsert(List(4) { false }, 4, 2),
+            2,
+        )
+        assertEquals(listOf("a", "b", "c", "d"), middle?.first)
+        assertEquals(2, indexAfterPlayedDrop(2, middle!!.first.size))
+    }
+
+    @Test
+    fun videosAddedWhileAnotherIsPlayingStayInTheUpcomingOrder() {
+        val afterFirst = withQueuedUpcoming(listOf("a", "b", "c"), 1, listOf("x"), false) { it }
+        val afterLast = withQueuedUpcoming(afterFirst, 1, listOf("x", "y"), false) { it }
+        assertEquals(listOf("a", "b", "c", "x", "y"), afterLast)
+        assertEquals(3, nextPlayable(2, afterLast.lastIndex) { true })
+        val following = withQueuedUpcoming(listOf("a", "b", "c"), 1, listOf("a", "b", "c", "y"), true) { it }
+        assertEquals(listOf("a", "b", "c", "y"), following)
     }
 }

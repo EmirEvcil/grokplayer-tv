@@ -292,7 +292,7 @@ fun BackupSection(
     Box(Modifier.fillMaxSize()) {
         when (val current = screen) {
             BackupScreen.Home -> HomePage(
-                shared = SharedRoots.usingSharedStorage(context),
+                shared = SharedRoots.usingSharedStorage(),
                 backups = backups,
                 summaries = summaries,
                 merging = merging,
@@ -336,7 +336,6 @@ fun BackupSection(
                 title = "Yedeğin adı",
                 hint = "Yukarı ile adı değiştir. Tamam kaydeder.",
                 name = name,
-                busy = busy,
                 saveLabel = if (busy) "Yazılıyor…" else "Kaydet",
                 leftFocus = leftFocus,
                 firstFocus = firstFocus,
@@ -691,7 +690,6 @@ private fun NamePage(
     title: String,
     hint: String,
     name: String,
-    busy: Boolean,
     saveLabel: String,
     leftFocus: FocusRequester,
     firstFocus: FocusRequester,
