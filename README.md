@@ -91,7 +91,7 @@ A personal list for videos to watch later. It is not a playlist.
 - Seek with frame previews around the playhead. A local file is read from disk, a downloaded HLS playlist is read from its segments, and a YouTube VOD uses that video’s storyboard. A card stays empty until its own frame is ready
 - Speed, subtitle, and audio/dub menus (icons on every row)
 - Selected speed is applied again when the decoder is ready
-- Captions are drawn by the app, one cue at a time. A local file uses a sidecar such as `video.tr.srt` or `video.tr.vtt`. An SRT cue keeps every line, so a two-line subtitle stays two lines. A long cue wraps instead of being cut off with `...`. YouTube captions (srv3, then json3) and a sidecar VTT show the current phrase from its first word. YouTube captions are also saved as a sidecar VTT. Dubbed audio tracks are in the same menu
+- Captions are drawn by the app, one cue at a time. A local file uses a sidecar such as `video.tr.srt` or `video.tr.vtt`. An SRT cue keeps every line, so a two-line subtitle stays two lines. A long cue wraps instead of being cut off with `...`. YouTube captions (srv3, then json3) and a sidecar VTT reveal the current phrase word by word. The whole phrase is laid out up front, so words already on screen stay put and words not yet spoken stay hidden. YouTube captions are also saved as a sidecar VTT. Dubbed audio tracks are in the same menu
 - Live: seek in the window, go-to-live, live edge, no watch-progress chrome
 - AVI via libVLC; other VOD via ExoPlayer (HLS / DASH / progressive / local HLS)
 - A completed download is opened from the local file, not re-resolved from YouTube

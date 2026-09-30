@@ -66,12 +66,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shadow
@@ -86,8 +89,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -134,6 +142,7 @@ import com.grokplayer.tv.data.PreviewGrabber
 import com.grokplayer.tv.data.SeekPreviewPlan
 import com.grokplayer.tv.data.StreamHttp
 import com.grokplayer.tv.data.StreamProbe
+import com.grokplayer.tv.data.scan.ScreenCaption
 import com.grokplayer.tv.data.scan.YouTubeAudio
 import com.grokplayer.tv.data.PlaybackQueue
 import com.grokplayer.tv.data.nextVodIndex
@@ -1180,18 +1189,19 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
-        val captionText = if (selectedSubtitleKey == SubtitleOption.Off.key) {
-            ""
+        val caption = if (selectedSubtitleKey == SubtitleOption.Off.key) {
+            ScreenCaption("")
         } else {
-            YouTubeCaptions.shownCaption(
+            YouTubeCaptions.screenCaption(
                 ytLines,
                 captionPos,
                 if (ytLines.isNotEmpty()) "" else exoCaption,
             )
         }
-        if (captionText.isNotEmpty()) {
+        if (caption.text.isNotEmpty()) {
             CaptionLine(
-                text = captionText,
+                text = caption.text,
+                reserve = caption.reserve,
                 fontSp = if (mini) 11f else settings.captionSp,
                 lifted = if (mini) miniFocused else (controls || playlistOpen),
                 compact = mini,
@@ -2433,9 +2443,26 @@ private fun CaptionLine(
     fontSp: Float,
     lifted: Boolean,
     compact: Boolean = false,
+    reserve: String = "",
     modifier: Modifier = Modifier,
 ) {
     if (text.isEmpty()) return
+    val anchored = reserve.isNotEmpty() && reserve.startsWith(text)
+    val captionShadow = Shadow(color = Color.Black, offset = Offset(0f, 2f), blurRadius = 6f)
+    // A paragraph shadow also draws the transparent tail, so the shadow stays on the spoken span.
+    val shown = if (anchored) {
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = GrokWhite, shadow = captionShadow)) {
+                append(text)
+            }
+            withStyle(SpanStyle(color = Color.Transparent, shadow = null)) {
+                append(reserve.removePrefix(text))
+            }
+        }
+    } else {
+        null
+    }
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     Box(
         modifier.padding(
             bottom = when {
@@ -2447,19 +2474,76 @@ private fun CaptionLine(
         ),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = text,
-            color = GrokWhite,
-            style = TextStyle(
-                fontSize = fontSp.sp,
-                shadow = Shadow(color = Color.Black, offset = Offset(0f, 2f), blurRadius = 6f),
-            ),
-            textAlign = TextAlign.Center,
-            softWrap = true,
-            modifier = Modifier
-                .testTag("caption-line")
-                .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(6.dp))
-                .padding(horizontal = 14.dp, vertical = 4.dp),
+        val style = TextStyle(fontSize = fontSp.sp)
+        if (shown == null) {
+            Text(
+                text = text,
+                color = GrokWhite,
+                style = style.copy(shadow = captionShadow),
+                textAlign = TextAlign.Center,
+                softWrap = true,
+                modifier = Modifier
+                    .testTag("caption-line")
+                    .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
+            )
+        } else {
+            // The unspoken tail stays in the layout so spoken words do not slide as it fills in.
+            Text(
+                text = shown,
+                color = Color.Unspecified,
+                style = style,
+                textAlign = TextAlign.Center,
+                softWrap = true,
+                onTextLayout = { layout = it },
+                modifier = Modifier
+                    .testTag("caption-line")
+                    .fillMaxWidth()
+                    .drawBehind {
+                        val result = layout ?: return@drawBehind
+                        drawSpokenBackdrop(
+                            result = result,
+                            spokenChars = text.length,
+                            padX = 14.dp.toPx(),
+                            padY = 4.dp.toPx(),
+                            radius = 6.dp.toPx(),
+                        )
+                    }
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
+            )
+        }
+    }
+}
+
+private fun DrawScope.drawSpokenBackdrop(
+    result: TextLayoutResult,
+    spokenChars: Int,
+    padX: Float,
+    padY: Float,
+    radius: Float,
+) {
+    if (spokenChars <= 0) return
+    val last = result.layoutInput.text.lastIndex
+    if (last < 0) return
+    val end = spokenChars.coerceAtMost(last + 1)
+    val color = Color.Black.copy(alpha = 0.72f)
+    val corner = CornerRadius(radius, radius)
+    for (line in 0 until result.lineCount) {
+        val lineStart = result.getLineStart(line)
+        if (lineStart >= end) break
+        val visibleEnd = minOf(result.getLineEnd(line), end)
+        if (visibleEnd <= lineStart) continue
+        val first = result.getBoundingBox(lineStart)
+        val tail = result.getBoundingBox(visibleEnd - 1)
+        val left = minOf(first.left, tail.left)
+        val right = maxOf(first.right, tail.right) + (padX * 2f)
+        val top = result.getLineTop(line)
+        val bottom = result.getLineBottom(line) + (padY * 2f)
+        drawRoundRect(
+            color = color,
+            topLeft = Offset(left, top),
+            size = Size((right - left).coerceAtLeast(0f), (bottom - top).coerceAtLeast(0f)),
+            cornerRadius = corner,
         )
     }
 }

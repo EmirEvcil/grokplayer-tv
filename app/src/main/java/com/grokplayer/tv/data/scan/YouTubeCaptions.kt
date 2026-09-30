@@ -54,6 +54,11 @@ data class YtCaptionWord(
     val endMs: Long,
 )
 
+data class ScreenCaption(
+    val text: String,
+    val reserve: String = "",
+)
+
 data class YtCaptionLine(
     val startMs: Long,
     val endMs: Long,
@@ -268,10 +273,24 @@ object YouTubeCaptions {
         positionMs: Long,
     ): String {
         val line = visibleLines(lines, positionMs).singleOrNull() ?: return ""
-        return wordsOnScreen(line.words, positionMs)
-            .joinToString(" ") { it.text.replace('\n', ' ').trim() }
-            .replace(Regex("\\s+"), " ")
-            .trim()
+        return phrase(wordsOnScreen(line.words, positionMs))
+    }
+
+    /**
+     * [text] is what has started. [reserve] is the whole rolling cue, so the line can
+     * be laid out once and new words do not shove the ones already on screen.
+     */
+    fun screenCaption(
+        lines: List<YtCaptionLine>,
+        positionMs: Long,
+        exoFallback: String,
+    ): ScreenCaption {
+        val line = visibleLines(lines, positionMs).singleOrNull()
+        if (line != null) {
+            val text = phrase(wordsOnScreen(line.words, positionMs))
+            if (text.isNotBlank()) return ScreenCaption(text, phrase(line.words))
+        }
+        return ScreenCaption(singleCaptionText(exoFallback))
     }
 
     /** YouTube text wins. Otherwise every line of the current cue, including a second line. */
@@ -279,10 +298,12 @@ object YouTubeCaptions {
         lines: List<YtCaptionLine>,
         positionMs: Long,
         exoFallback: String,
-    ): String {
-        val yt = onScreenCaption(lines, positionMs)
-        if (yt.isNotBlank()) return yt
-        return singleCaptionText(exoFallback)
+    ): String = screenCaption(lines, positionMs, exoFallback).text
+
+    private fun phrase(words: List<YtCaptionWord>): String {
+        return words.joinToString(" ") { it.text.replace('\n', ' ').trim() }
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     fun singleCaptionText(raw: String): String {

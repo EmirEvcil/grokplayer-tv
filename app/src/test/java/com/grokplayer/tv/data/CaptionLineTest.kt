@@ -135,6 +135,26 @@ class CaptionLineTest {
     }
 
     @Test
+    fun rollingReservesTheFullLineSoSpokenWordsDoNotMove() {
+        val words = listOf("bir", "iki", "uc", "dort").mapIndexed { index, word ->
+            YtCaptionWord(word, index * 80L, index * 80L + 80L)
+        }
+        val lines = listOf(YtCaptionLine(0, 2_000, words))
+        val early = YouTubeCaptions.screenCaption(lines, 100L, "")
+        assertEquals("bir iki", early.text)
+        assertEquals("bir iki uc dort", early.reserve)
+        assertTrue(early.reserve.startsWith(early.text))
+        val later = YouTubeCaptions.screenCaption(lines, 200L, "")
+        assertEquals("bir iki uc", later.text)
+        assertEquals(early.reserve, later.reserve)
+        val done = YouTubeCaptions.screenCaption(lines, 400L, "")
+        assertEquals(done.reserve, done.text)
+        val exo = YouTubeCaptions.screenCaption(emptyList(), 0L, "satir\niki")
+        assertEquals("satir\niki", exo.text)
+        assertEquals("", exo.reserve)
+    }
+
+    @Test
     fun theFullQuestionStaysVisibleAtSeventeenSeconds() {
         val phrase = "şey yani bütün çocuklar ikna oldu öyle mi?"
         val raw = """
